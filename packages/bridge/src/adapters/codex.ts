@@ -64,7 +64,7 @@ export async function startCodexAdapter(
   >();
 
   let threadId: string | null = null;
-  let ws: WebSocket;
+  let ws: WebSocket | null = null;
 
   const setStatus = async (
     state: "idle" | "thinking" | "running" | "waiting_approval" | "error" | "offline",
@@ -106,34 +106,61 @@ export async function startCodexAdapter(
       console.warn(`[codex] app-server exited code=${code}`);
       void setStatus("offline", `app-server exited (${code})`);
     });
-    await sleep(800);
   }
 
   const headers: Record<string, string> = {};
   if (token) headers.Authorization = `Bearer ${token}`;
 
-  ws = await new Promise<WebSocket>((resolve, reject) => {
-    const socket = new WebSocket(config.codexWsUrl, { headers });
-    const timer = setTimeout(
-      () => reject(new Error("codex ws connect timeout")),
-      15_000,
-    );
-    socket.once("open", () => {
-      clearTimeout(timer);
-      resolve(socket);
-    });
-    socket.once("error", (err) => {
-      clearTimeout(timer);
-      reject(err);
-    });
-  });
+  // app-server can take a few seconds (sandbox bootstrap). Retry WS connect.
+  const maxAttempts = 30;
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      ws = await new Promise<WebSocket>((resolve, reject) => {
+        const socket = new WebSocket(config.codexWsUrl, { headers });
+        const timer = setTimeout(
+          () => {
+            try {
+              socket.terminate();
+            } catch {
+              /* ignore */
+            }
+            reject(new Error("codex ws connect timeout"));
+          },
+          3_000,
+        );
+        socket.once("open", () => {
+          clearTimeout(timer);
+          resolve(socket);
+        });
+        socket.once("error", (err) => {
+          clearTimeout(timer);
+          reject(err);
+        });
+      });
+      break;
+    } catch (err) {
+      lastErr = err;
+      console.warn(
+        `[codex] waiting for app-server (${attempt}/${maxAttempts}):`,
+        err instanceof Error ? err.message : err,
+      );
+      await sleep(500);
+    }
+  }
+  if (!ws) {
+    throw lastErr instanceof Error
+      ? lastErr
+      : new Error("codex ws connect failed");
+  }
+  const socket = ws;
   console.log(`[codex] connected ${config.codexWsUrl}`);
 
   const send = (method: string, params?: unknown): Promise<unknown> => {
     const id = nextId++;
     return new Promise((resolve, reject) => {
       rpcWaiters.set(id, { resolve, reject });
-      ws.send(JSON.stringify({ id, method, params }));
+      socket.send(JSON.stringify({ id, method, params }));
       setTimeout(() => {
         if (rpcWaiters.has(id)) {
           rpcWaiters.delete(id);
@@ -144,11 +171,11 @@ export async function startCodexAdapter(
   };
 
   const notify = (method: string, params?: unknown) => {
-    ws.send(JSON.stringify({ method, params }));
+    socket.send(JSON.stringify({ method, params }));
   };
 
   const respond = (id: number | string, result: unknown) => {
-    ws.send(JSON.stringify({ id, result }));
+    socket.send(JSON.stringify({ id, result }));
   };
 
   const handleServerMessage = async (raw: string) => {
@@ -246,10 +273,10 @@ export async function startCodexAdapter(
     }
   };
 
-  ws.on("message", (data) => {
+  socket.on("message", (data) => {
     void handleServerMessage(data.toString());
   });
-  ws.on("close", () => {
+  socket.on("close", () => {
     void setStatus("offline", "Codex websocket closed");
   });
 
@@ -315,7 +342,7 @@ export async function startCodexAdapter(
     },
     async close() {
       try {
-        ws.close();
+        socket.close();
       } catch {
         /* ignore */
       }
