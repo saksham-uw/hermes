@@ -13,7 +13,14 @@ static void on_down(const char *json, int len) {
 void app_main(void) {
   ESP_LOGI(TAG, "Hermes firmware starting");
   ESP_ERROR_CHECK(nvs_flash_init());
-  ESP_ERROR_CHECK(hermes_wifi_connect());
+
+  /* Display + boot animation + menu first — don't wait on Wi-Fi. */
   ESP_ERROR_CHECK(hermes_ui_start());
-  ESP_ERROR_CHECK(hermes_mqtt_start(on_down));
+
+  esp_err_t wifi = hermes_wifi_connect();
+  if (wifi != ESP_OK) {
+    ESP_LOGW(TAG, "Wi-Fi not connected yet — UI still usable");
+  } else {
+    ESP_ERROR_CHECK(hermes_mqtt_start(on_down));
+  }
 }

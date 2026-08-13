@@ -1,0 +1,36 @@
+[0;33m--- esp-idf-monitor 1.9.0 on /dev/cu.usbmodem101 115200[0m
+[0;33m--- Quit: Ctrl+] | Menu: Ctrl+T | Help: Ctrl+T followed by Ctrl+H[0m
+[0m--- 0x40041a79: [0;33mets_delay_us[0m[0m in [0;32mROM[0m
+[1;31m--- Error: read failed: [Errno 6] Device not configured[0m
+[0;33m--- Waiting for the device to reconnect[0m[0;33m[0m
+[0m--- 0x4200ac57: [0;33mapp_main[0m[0m at [0;32m/Users/saksham/Weekend Projects/hermes/firmware/main/main.c[0m[0m:[1;31m16[0m
+[0m--- 0x4037c557: [0;33m_esp_error_check_failed[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/esp_err.c[0m[0m:[1;31m49[0m
+[0m--- 0x40375b6a: [0;33mpanic_abort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/panic.c[0m[0m:[1;31m463[0m
+[0m--- 0x4037c561: [0;33mesp_system_abort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/port/esp_system_chip.c[0m[0m:[1;31m92[0m
+[0m--- 0x40384789: [0;33mabort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/newlib/abort.c[0m[0m:[1;31m38[0m
+[0m--- 0x4037c557: [0;33m_esp_error_check_failed[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/esp_err.c[0m[0m:[1;31m49[0m
+[0m--- 0x4200ac57: [0;33mapp_main[0m[0m at [0;32m/Users/saksham/Weekend Projects/hermes/firmware/main/main.c[0m[0m:[1;31m16[0m
+[0m--- 0x42099977: [0;33mmain_task[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/freertos/app_startup.c[0m[0m:[1;31m208[0m
+[0m--- 0x4037d0ad: [0;33mvPortTaskWrapper[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c[0m[0m:[1;31m139[0m
+[0m--- 0x40375aa4: [0;33mesp_restart_noos[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/port/soc/esp32s3/system_internal.c[0m[0m:[1;31m158[0m
+[0m--- 0x4200ac57: [0;33mapp_main[0m[0m at [0;32m/Users/saksham/Weekend Projects/hermes/firmware/main/main.c[0m[0m:[1;31m16[0m
+[0m--- 0x4037c557: [0;33m_esp_error_check_failed[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/esp_err.c[0m[0m:[1;31m49[0m
+[0m--- 0x40375b6a: [0;33mpanic_abort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/panic.c[0m[0m:[1;31m463[0m
+[0m--- 0x4037c561: [0;33mesp_system_abort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/port/esp_system_chip.c[0m[0m:[1;31m92[0m
+[0m--- 0x40384789: [0;33mabort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/newlib/abort.c[0m[0m:[1;31m38[0m
+[0m--- 0x4037c557: [0;33m_esp_error_check_failed[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/esp_err.c[0m[0m:[1;31m49[0m
+[0m--- 0x4200ac57: [0;33mapp_main[0m[0m at [0;32m/Users/saksham/Weekend Projects/hermes/firmware/main/main.c[0m[0m:[1;31m16[0m
+[0m--- 0x42099977: [0;33mmain_task[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/freertos/app_startup.c[0m[0m:[1;31m208[0m
+[0m--- 0x4037d0ad: [0;33mvPortTaskWrapper[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c[0m[0m:[1;31m139[0m
+[0m--- 0x40375aa4: [0;33mesp_restart_noos[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/port/soc/esp32s3/system_internal.c[0m[0m:[1;31m158[0m
+[0m--- 0x4200ac57: [0;33mapp_main[0m[0m at [0;32m/Users/saksham/Weekend Projects/hermes/firmware/main/main.c[0m[0m:[1;31m16[0m
+[0m--- 0x4037c557: [0;33m_esp_error_check_failed[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/esp_err.c[0m[0m:[1;31m49[0m
+[0m--- 0x40375b6a: [0;33mpanic_abort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/panic.c[0m[0m:[1;31m463[0m
+[0m--- 0x4037c561: [0;33mesp_system_abort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/port/esp_system_chip.c[0m[0m:[1;31m92[0m
+[0m--- 0x40384789: [0;33mabort[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/newlib/abort.c[0m[0m:[1;31m38[0m
+[0m--- 0x4037c557: [0;33m_esp_error_check_failed[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/esp_err.c[0m[0m:[1;31m49[0m
+[0m--- 0x4200ac57: [0;33mapp_main[0m[0m at [0;32m/Users/saksham/Weekend Projects/hermes/firmware/main/main.c[0m[0m:[1;31m16[0m
+[0m--- 0x42099977: [0;33mmain_task[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/freertos/app_startup.c[0m[0m:[1;31m208[0m
+[0m--- 0x4037d0ad: [0;33mvPortTaskWrapper[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/freertos/FreeRTOS-Kernel/portable/xtensa/port.c[0m[0m:[1;31m139[0m
+[0m--- 0x40375aa4: [0;33mesp_restart_noos[0m[0m at [0;32m/Users/saksham/.espressif/v5.3.2/esp-idf/components/esp_system/port/soc/esp32s3/system_internal.c[0m[0m:[1;31m158[0m
+[0m

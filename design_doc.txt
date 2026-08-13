@@ -1,0 +1,65 @@
+I should see exactly this ascii when device is turned on
+
+ _   _  ____  ____  __  __  ____  ___ 
+( )_( )( ___)(  _ \(  \/  )( ___)/ __)
+ ) _ (  )__)  )   / )    (  )__) \__ \
+(_) (_)(____)(_)\_)(_/\/\_)(____)(___/
+
+Below that a loading bar that slowly loads
+and below that bar some subtitle text that says cool stuff about booting up Hermes.
+The loading page should take 3 seconds to finish.
+
+When esp32 is off, holding power should turn it on and show boot screen.
+When esp32 is on, holding power should show boot screen again but with subtitle
+text that says cool stuff about turning hermes off and then turn it off.
+
+After boot screen loading is finished, I see a left aligned menu. The menu has arrow
+pointers like this next to its item, the item highlighted should be the current seletion.
+Swiping up should move the highlight to up menu item and vice-versa for down.
+short-touch/clicking the screen should select the highlighted menu item. For now,
+just have these menu items.
+
+> codex
+> cursor
+> status
+> settings
+> wifi
+> switch off
+
+codex page should show me chat history exactly how codex cli shows it right now,
+i can go in each chat to view the chat, if i select a chat that should/is running
+stream it, for approvals in footer ask for yes, always yes, no. short-pressing
+power button should bring me back to the menu.
+
+cursor page should be similar to codex page in behaviour.
+
+status should show a new very techi/cyberpunky codie screen of status with ascii
+graphs/figures/icons and shit. This page shows all types of status including but
+not limited to battery percentage of esp32, connection strength to internet,
+state of codex, state of cursor etc. short-pressing power button should bring me
+back to the menu.
+
+settings should have Display theme (light theme, mono japanese painting color theme,
+night mode color theme, etc.), Brightness selector. short-pressing power button should
+bring me back to the menu.
+
+wifi should have ability for me to switch between 3 wifis that we are going to bake in
+it, following are the config for you to flash in:
+
+ssid: roger7459
+pswd: Sharry22#%
+type: home wifi
+
+ssid: Saksham
+pswd: yomamafatvery
+type: personal hotspot
+
+ssid: Adelaide_Club
+pswd: 4163679957
+type: office wifi
+
+In wifi menu, i should be able to scroll (using the same up down motion, and short-tap
+the screen to change what wifi i want esp to use), once selected, show with a marker
+the active selection. short-pressing power button should bring me back to the menu.
+
+switch off should beave the same as long pressing power button.

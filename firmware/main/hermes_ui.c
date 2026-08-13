@@ -1,91 +1,604 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_log.h"
+#include "esp_sleep.h"
 #include "cJSON.h"
-#include "sdkconfig.h"
+#include "board_pins.h"
 #include "hermes_ui.h"
 #include "hermes_mqtt.h"
+#include "hermes_i2c.h"
+#include "hermes_touch.h"
+#include "hermes_gfx.h"
+#include "display_axs15231b.h"
+#include "wifi_connect.h"
+#include "hermes_sd.h"
+#include "hermes_settings.h"
 
 static const char *TAG = "hermes_ui";
 
-/* Waveshare boards expose BOOT on GPIO 0. Use it as a console UI control when
- * LVGL/touch BSP is not linked yet (CONFIG_HERMES_UI_CONSOLE). */
-#ifndef CONFIG_HERMES_BOOT_GPIO
-#define CONFIG_HERMES_BOOT_GPIO 0
-#endif
+#define EDGE_PX 24
+#define SWIPE_MIN 40
+#define TAP_SLOP 20
+#define BTN_LONG_MS 900
 
-typedef enum { SCREEN_STATUS = 0, SCREEN_APPROVAL = 1, SCREEN_PROMPT = 2 } screen_t;
+typedef enum {
+  SCR_MENU = 0,
+  SCR_CODEX,
+  SCR_CURSOR,
+  SCR_STATUS,
+  SCR_SETTINGS,
+  SCR_WIFI,
+} screen_t;
 
-static screen_t s_screen = SCREEN_STATUS;
-static char s_status[128] = "boot";
-static char s_agent[16] = "codex";
-static char s_approval_id[64] = "";
-static char s_approval_title[96] = "";
-static char s_approval_detail[200] = "";
-static int s_prompt_idx = 0;
+#define LOG_CAP 48
+#define LOG_LINE_LEN 120
+#define CHAT_CAP 8
 
-static const char *PRESETS[] = {
-    "status",
-    "continue",
-    "summarize what you did",
-    "stop and wait for me",
-};
+typedef struct {
+  char id[48];
+  char title[40];
+  char preview[80];
+  bool live;
+} chat_item_t;
 
-static void publish_json(cJSON *obj) {
-  char *printed = cJSON_PrintUnformatted(obj);
-  if (printed) {
-    hermes_mqtt_publish_up(printed);
-    free(printed);
+typedef struct {
+  char lines[LOG_CAP][LOG_LINE_LEN];
+  int count;
+  int head;
+  chat_item_t chats[CHAT_CAP];
+  int chat_n;
+  char state[24];
+  char approval_id[64];
+  char approval_title[64];
+  char approval_detail[120];
+  bool auto_approve;
+} agent_view_t;
+
+static hermes_gfx_t s_gfx;
+static SemaphoreHandle_t s_lock;
+static volatile bool s_dirty = true;
+static bool s_ready_ui;
+
+static screen_t s_screen = SCR_MENU;
+static int s_menu_idx = 0;
+static int s_settings_idx = 0;
+static int s_wifi_idx = 0;
+static int s_chat_idx = 0;
+static int s_agent_depth = 0; /* 0=list, 1=chat */
+static int s_approve_idx = 0; /* 0=yes 1=always 2=no */
+static hermes_theme_t s_theme = THEME_NIGHT;
+static uint8_t s_brightness = 85;
+
+static agent_view_t s_codex;
+static agent_view_t s_cursor_v;
+static char s_status[160] = "boot";
+static bool s_inet_cached;
+static TickType_t s_inet_checked_at;
+
+static bool internet_cached(void) {
+  TickType_t now = xTaskGetTickCount();
+  if ((now - s_inet_checked_at) > pdMS_TO_TICKS(5000) || s_inet_checked_at == 0) {
+    s_inet_cached = hermes_wifi_has_internet();
+    s_inet_checked_at = now;
   }
-  cJSON_Delete(obj);
+  return s_inet_cached;
 }
 
-static void send_approve(bool approve) {
-  if (s_approval_id[0] == '\0') return;
-  cJSON *o = cJSON_CreateObject();
-  cJSON_AddStringToObject(o, "type", approve ? "approve" : "deny");
-  cJSON_AddStringToObject(o, "id", s_approval_id);
-  publish_json(o);
-  ESP_LOGI(TAG, "%s %s", approve ? "approve" : "deny", s_approval_id);
-  s_approval_id[0] = '\0';
-  s_screen = SCREEN_STATUS;
+static const char *MENU[] = {"codex", "cursor", "status", "settings", "wifi", "switch off"};
+static const int MENU_N = 6;
+static const int SETT_N = 4;
+static const char *APPROVE_OPTS[] = {"yes", "always yes", "no"};
+static const int APPROVE_N = 3;
+
+static agent_view_t *agent_for_screen(screen_t scr) {
+  return (scr == SCR_CURSOR) ? &s_cursor_v : &s_codex;
 }
 
-static void send_prompt(const char *text) {
-  cJSON *o = cJSON_CreateObject();
-  cJSON_AddStringToObject(o, "type", "prompt");
-  cJSON_AddStringToObject(o, "agent", "codex");
-  cJSON_AddStringToObject(o, "text", text);
-  publish_json(o);
-  ESP_LOGI(TAG, "prompt: %s", text);
+static void agent_clear_log(agent_view_t *a) {
+  if (!a) return;
+  a->count = 0;
+  a->head = 0;
+  memset(a->lines, 0, sizeof(a->lines));
 }
 
-static void render(void) {
-  printf("\n======== HERMES ========\n");
-  printf("mqtt: %s\n", hermes_mqtt_is_connected() ? "up" : "down");
-  if (s_screen == SCREEN_STATUS) {
-    printf("[STATUS] agent=%s\n%s\n", s_agent, s_status);
-    printf("BOOT short: next screen\n");
-  } else if (s_screen == SCREEN_APPROVAL) {
-    printf("[APPROVAL]\n%s\n%s\nid=%s\n", s_approval_title, s_approval_detail, s_approval_id);
-    printf("BOOT short: DENY | BOOT long(>1s): APPROVE\n");
+static void agent_push_log(agent_view_t *a, const char *text) {
+  if (!a || !text || !text[0]) return;
+  strncpy(a->lines[a->head], text, LOG_LINE_LEN - 1);
+  a->lines[a->head][LOG_LINE_LEN - 1] = 0;
+  a->head = (a->head + 1) % LOG_CAP;
+  if (a->count < LOG_CAP) a->count++;
+}
+
+static const char *agent_log_at(const agent_view_t *a, int oldest_i) {
+  /* oldest_i = 0 .. count-1 from oldest to newest */
+  int idx = (a->head - a->count + oldest_i + LOG_CAP * 2) % LOG_CAP;
+  return a->lines[idx];
+}
+
+static adc_oneshot_unit_handle_t s_adc;
+static bool s_adc_ok;
+
+static void mark_dirty(void) { s_dirty = true; }
+
+/* ——— battery (Waveshare divider on GPIO4) ——— */
+static int battery_percent(void) {
+  if (!s_adc_ok) return -1;
+  int raw = 0;
+  if (adc_oneshot_read(s_adc, ADC_CHANNEL_3, &raw) != ESP_OK) return -1;
+  /* Uncalibrated estimate with 1:3 divider on GPIO4. */
+  int pack_mv = (raw * 3100 / 4095) * 3;
+  if (pack_mv < 2500) return -1;
+  int pct = (pack_mv - 3300) * 100 / 900;
+  if (pct < 0) pct = 0;
+  if (pct > 100) pct = 100;
+  return pct;
+}
+
+static void adc_init(void) {
+  adc_oneshot_unit_init_cfg_t cfg = {.unit_id = ADC_UNIT_1};
+  if (adc_oneshot_new_unit(&cfg, &s_adc) != ESP_OK) return;
+  adc_oneshot_chan_cfg_t ch = {.bitwidth = ADC_BITWIDTH_DEFAULT, .atten = ADC_ATTEN_DB_12};
+  if (adc_oneshot_config_channel(s_adc, ADC_CHANNEL_3, &ch) == ESP_OK) s_adc_ok = true;
+}
+
+/* ——— power off ——— */
+static void do_switch_off(void) {
+  static const char *off_lines[] = {
+      "sealing the courier bag",
+      "dimming the caduceus",
+      "parking the agents",
+      "see you after lunch",
+  };
+  hermes_gfx_clear(&s_gfx, COL_BG);
+  int y = hermes_gfx_draw_hermes_logo(&s_gfx, 16, 16, COL_FOCUS, 1);
+  hermes_gfx_fill_rect(&s_gfx, 16, y + 10, GFX_W - 32, 10, COL_LINE);
+  hermes_gfx_fill_rect(&s_gfx, 16, y + 10, GFX_W - 32, 10, COL_FOCUS);
+  hermes_gfx_text(&s_gfx, 16, y + 28, off_lines[esp_log_timestamp() % 4], COL_DIM, 1);
+  hermes_gfx_flush(&s_gfx);
+  vTaskDelay(pdMS_TO_TICKS(1600));
+  hermes_display_set_backlight(false);
+  hermes_power_hold_release();
+  /* Deep sleep until PWR (GPIO16) low */
+  esp_sleep_enable_ext0_wakeup(GPIO_NUM_16, 0);
+  esp_deep_sleep_start();
+}
+
+/* ——— boot screen (3s) ——— */
+static void boot_screen(bool shutting_down) {
+  static const char *boot_sub[] = {
+      "warming the radio",
+      "untangling mqtt threads",
+      "polishing the remote",
+      "asking codex to stretch",
+      "calibrating pocket gravity",
+  };
+  static const char *off_sub[] = {
+      "folding the menus away",
+      "cutting the power rail",
+      "hermes signing off",
+      "courier going dark",
+  };
+  const char **subs = shutting_down ? off_sub : boot_sub;
+  const int nsub = shutting_down ? 4 : 5;
+
+  const int frames = 30; /* ~3s at 100ms */
+  for (int f = 0; f <= frames; f++) {
+    hermes_gfx_clear(&s_gfx, COL_BG);
+    int y = hermes_gfx_draw_hermes_logo(&s_gfx, 16, 12, COL_FOCUS, 1);
+    int bar_y = y + 12;
+    int bar_w = GFX_W - 32;
+    hermes_gfx_rect(&s_gfx, 16, bar_y, bar_w, 12, COL_LINE);
+    int fill = (bar_w - 4) * f / frames;
+    hermes_gfx_fill_rect(&s_gfx, 18, bar_y + 2, fill, 8, COL_FOCUS);
+    const char *sub = subs[(f / 6) % nsub];
+    hermes_gfx_text(&s_gfx, 16, bar_y + 20, sub, COL_DIM, 1);
+    hermes_gfx_flush(&s_gfx);
+    vTaskDelay(pdMS_TO_TICKS(100));
+  }
+  if (shutting_down) {
+    hermes_display_set_backlight(false);
+    hermes_power_hold_release();
+    esp_sleep_enable_ext0_wakeup(GPIO_NUM_16, 0);
+    esp_deep_sleep_start();
+  }
+}
+
+/* ——— screens ——— */
+static void draw_menu(void) {
+  hermes_gfx_text(&s_gfx, 12, 4, "HERMES", COL_DIM, 1);
+  hermes_gfx_hline(&s_gfx, 12, 14, GFX_W - 24, COL_LINE);
+  int y = 20;
+  for (int i = 0; i < MENU_N; i++) {
+    bool sel = (i == s_menu_idx);
+    uint16_t col = sel ? COL_FOCUS : COL_TEXT;
+    char line[40];
+    snprintf(line, sizeof(line), "%s %s", sel ? ">" : " ", MENU[i]);
+    hermes_gfx_text(&s_gfx, 16, y, line, col, 2);
+    y += 24;
+  }
+}
+
+static void draw_bars(int x, int y, int w, int h, int pct, uint16_t fg) {
+  hermes_gfx_rect(&s_gfx, x, y, w, h, COL_LINE);
+  int fill = (w - 2) * pct / 100;
+  if (fill > 0) hermes_gfx_fill_rect(&s_gfx, x + 1, y + 1, fill, h - 2, fg);
+}
+
+static void publish_approval(bool allow) {
+  agent_view_t *a = agent_for_screen(s_screen);
+  if (!a || !a->approval_id[0]) return;
+  char json[160];
+  snprintf(json, sizeof(json), "{\"type\":\"%s\",\"id\":\"%s\"}", allow ? "approve" : "deny",
+           a->approval_id);
+  hermes_mqtt_publish_up(json);
+  a->approval_id[0] = 0;
+  a->approval_title[0] = 0;
+  a->approval_detail[0] = 0;
+  strncpy(a->state, allow ? "running" : "idle", sizeof(a->state) - 1);
+}
+
+static void draw_agent(const char *title, agent_view_t *a) {
+  hermes_gfx_text(&s_gfx, 12, 4, title, COL_FOCUS, 1);
+  hermes_gfx_hline(&s_gfx, 12, 14, GFX_W - 24, COL_LINE);
+
+  if (s_agent_depth == 0) {
+    /* Chat list */
+    if (a->chat_n == 0) {
+      hermes_gfx_text(&s_gfx, 16, 40, "> (no chats yet)", COL_DIM, 1);
+      hermes_gfx_text(&s_gfx, 16, 56, "  waiting for bridge...", COL_DIM, 1);
+    } else {
+      int y = 22;
+      for (int i = 0; i < a->chat_n; i++) {
+        bool sel = (i == s_chat_idx);
+        char line[48];
+        snprintf(line, sizeof(line), "%s %s%s", sel ? ">" : " ", a->chats[i].title,
+                 a->chats[i].live ? " *" : "");
+        hermes_gfx_text(&s_gfx, 12, y, line, sel ? COL_FOCUS : COL_TEXT, 1);
+        hermes_gfx_text(&s_gfx, 24, y + 12, a->chats[i].preview[0] ? a->chats[i].preview : "-",
+                        COL_DIM, 1);
+        y += 28;
+        if (y > GFX_H - 30) break;
+      }
+    }
+    hermes_gfx_text(&s_gfx, 12, GFX_H - 14, "tap=open chat   PWR=menu", COL_DIM, 1);
+    return;
+  }
+
+  /* Chat detail / live stream */
+  char head[48];
+  snprintf(head, sizeof(head), "[%s]", a->state[0] ? a->state : "idle");
+  hermes_gfx_text(&s_gfx, 12, 18, head, COL_WARN, 1);
+
+  int y = 30;
+  int max_lines = a->approval_id[0] ? 8 : 12;
+  int start = a->count > max_lines ? a->count - max_lines : 0;
+  if (a->count == 0) {
+    hermes_gfx_text(&s_gfx, 12, y, "(empty — stream when running)", COL_DIM, 1);
   } else {
-    printf("[PROMPT] preset %d: %s\n", s_prompt_idx, PRESETS[s_prompt_idx]);
-    printf("BOOT short: next preset | BOOT long: send\n");
+    for (int i = start; i < a->count; i++) {
+      hermes_gfx_text(&s_gfx, 12, y, agent_log_at(a, i), COL_TEXT, 1);
+      y += 10;
+      if (y > GFX_H - 28) break;
+    }
   }
-  printf("========================\n");
+
+  if (a->approval_id[0]) {
+    hermes_gfx_hline(&s_gfx, 12, GFX_H - 36, GFX_W - 24, COL_LINE);
+    if (a->approval_title[0]) {
+      hermes_gfx_text(&s_gfx, 12, GFX_H - 34, a->approval_title, COL_WARN, 1);
+    }
+    int x = 12;
+    for (int i = 0; i < APPROVE_N; i++) {
+      bool sel = (i == s_approve_idx);
+      char opt[24];
+      snprintf(opt, sizeof(opt), "%s%s", sel ? ">" : " ", APPROVE_OPTS[i]);
+      hermes_gfx_text(&s_gfx, x, GFX_H - 20, opt, sel ? COL_FOCUS : COL_TEXT, 1);
+      x += hermes_gfx_text_width(opt, 1) + 16;
+    }
+  } else {
+    hermes_gfx_text(&s_gfx, 12, GFX_H - 14, "PWR short = back", COL_DIM, 1);
+  }
+}
+
+static void draw_status(void) {
+  hermes_gfx_text(&s_gfx, 12, 6, "// STATUS", COL_FOCUS, 1);
+  hermes_gfx_hline(&s_gfx, 12, 18, GFX_W - 24, COL_LINE);
+
+  int bat = battery_percent();
+  int rssi = hermes_wifi_rssi();
+  int sig = 0;
+  if (rssi != 0) {
+    /* -30 excellent … -90 bad */
+    sig = (rssi + 90) * 100 / 60;
+    if (sig < 0) sig = 0;
+    if (sig > 100) sig = 100;
+  }
+
+  char line[64];
+  hermes_gfx_text(&s_gfx, 12, 28, "BAT", COL_DIM, 1);
+  if (bat >= 0) {
+    snprintf(line, sizeof(line), "%3d%%", bat);
+    hermes_gfx_text(&s_gfx, 50, 28, line, COL_TEXT, 1);
+    draw_bars(100, 28, 120, 10, bat, bat < 20 ? COL_BAD : COL_OK);
+  } else {
+    hermes_gfx_text(&s_gfx, 50, 28, "usb?", COL_DIM, 1);
+  }
+
+  hermes_gfx_text(&s_gfx, 12, 48, "NET", COL_DIM, 1);
+  if (hermes_wifi_is_connected()) {
+    snprintf(line, sizeof(line), "%ddBm", rssi);
+    hermes_gfx_text(&s_gfx, 50, 48, line, COL_TEXT, 1);
+    draw_bars(100, 48, 120, 10, sig, COL_FOCUS);
+  } else {
+    hermes_gfx_text(&s_gfx, 50, 48, "DOWN", COL_BAD, 1);
+  }
+
+  hermes_gfx_text(&s_gfx, 12, 70, "CDX", COL_DIM, 1);
+  snprintf(line, sizeof(line), "[%s]", s_codex.state[0] ? s_codex.state : "idle");
+  hermes_gfx_text(&s_gfx, 50, 70, line, COL_FOCUS, 1);
+
+  hermes_gfx_text(&s_gfx, 12, 90, "CUR", COL_DIM, 1);
+  snprintf(line, sizeof(line), "[%s]", s_cursor_v.state[0] ? s_cursor_v.state : "unknown");
+  hermes_gfx_text(&s_gfx, 50, 90, line, COL_TEXT, 1);
+
+  hermes_gfx_text(&s_gfx, 12, 110, "MQT", COL_DIM, 1);
+  hermes_gfx_text(&s_gfx, 50, 110, hermes_mqtt_is_connected() ? "LINKED" : "offline",
+                  hermes_mqtt_is_connected() ? COL_OK : COL_WARN, 1);
+
+  hermes_gfx_text(&s_gfx, 12, 132, "LOG", COL_DIM, 1);
+  hermes_gfx_text_wrap(&s_gfx, 50, 132, GFX_W - 60, s_status, COL_TEXT, 1);
+
+  hermes_gfx_text(&s_gfx, 12, GFX_H - 14, "PWR short = menu", COL_DIM, 1);
+}
+
+static void draw_settings(void) {
+  hermes_gfx_text(&s_gfx, 12, 8, "SETTINGS", COL_DIM, 1);
+  hermes_gfx_hline(&s_gfx, 12, 20, GFX_W - 24, COL_LINE);
+
+  char theme_line[40];
+  snprintf(theme_line, sizeof(theme_line), "theme: %s", hermes_theme_name(s_theme));
+  char bri_line[40];
+  snprintf(bri_line, sizeof(bri_line), "brightness: %d%%", s_brightness);
+  const char *rows[4];
+  rows[0] = theme_line;
+  rows[1] = "brightness +";
+  rows[2] = "brightness -";
+  rows[3] = "back";
+  (void)bri_line;
+  hermes_gfx_text(&s_gfx, 16, 26, bri_line, COL_DIM, 1);
+
+  int y = 48;
+  for (int i = 0; i < SETT_N; i++) {
+    bool sel = (i == s_settings_idx);
+    char line[48];
+    snprintf(line, sizeof(line), "%s %s", sel ? ">" : " ", rows[i]);
+    hermes_gfx_text(&s_gfx, 16, y, line, sel ? COL_FOCUS : COL_TEXT, 2);
+    y += 26;
+  }
+}
+
+static void draw_wifi(void) {
+  hermes_gfx_text(&s_gfx, 12, 8, "WIFI", COL_DIM, 1);
+  hermes_gfx_hline(&s_gfx, 12, 20, GFX_W - 24, COL_LINE);
+  int y = 28;
+  int active = hermes_wifi_active_index();
+  for (int i = 0; i < hermes_wifi_count(); i++) {
+    const hermes_wifi_net_t *n = hermes_wifi_net(i);
+    const hermes_wifi_sight_t *s = hermes_wifi_sight(i);
+    bool sel = (i == s_wifi_idx);
+    bool on = (i == active) && hermes_wifi_is_connected();
+    bool ok = s && s->visible;
+    uint16_t col = !ok ? COL_DIM : (sel ? COL_FOCUS : COL_TEXT);
+
+    char left[40];
+    snprintf(left, sizeof(left), "%s%s %s", sel ? ">" : " ", on ? "*" : (ok ? " " : "x"), n->ssid);
+    hermes_gfx_text(&s_gfx, 8, y, left, col, 1);
+    hermes_gfx_text(&s_gfx, 20, y + 12, n->label, COL_DIM, 1);
+
+    /* Right-aligned stats */
+    char right[32];
+    if (on) {
+      int rssi = hermes_wifi_rssi();
+      bool net = internet_cached();
+      snprintf(right, sizeof(right), "%ddBm %s", rssi ? rssi : (s ? s->rssi : 0),
+               net ? "UP" : "NO NET");
+      hermes_gfx_text(&s_gfx, GFX_W - 8 - hermes_gfx_text_width(right, 1), y, right,
+                      net ? COL_OK : COL_WARN, 1);
+    } else if (ok) {
+      snprintf(right, sizeof(right), "%ddBm ch%d", s->rssi, s->channel);
+      hermes_gfx_text(&s_gfx, GFX_W - 8 - hermes_gfx_text_width(right, 1), y, right, COL_DIM, 1);
+      const char *st = "in range";
+      hermes_gfx_text(&s_gfx, GFX_W - 8 - hermes_gfx_text_width(st, 1), y + 12, st, COL_DIM, 1);
+    } else {
+      const char *st = "not found";
+      hermes_gfx_text(&s_gfx, GFX_W - 8 - hermes_gfx_text_width(st, 1), y, st, COL_BAD, 1);
+    }
+    y += 40;
+  }
+  hermes_gfx_text(&s_gfx, 12, GFX_H - 14, "tap=switch if in range   PWR=menu", COL_DIM, 1);
+}
+
+static void activate_wifi(void) {
+  int idx = s_wifi_idx;
+  if (!hermes_wifi_is_selectable(idx)) {
+    snprintf(s_status, sizeof(s_status), "%s not in range", hermes_wifi_net(idx)->ssid);
+    mark_dirty();
+    return;
+  }
+  hermes_gfx_clear(&s_gfx, COL_BG);
+  hermes_gfx_text_centered(&s_gfx, 70, "checking link...", COL_WARN, 2);
+  hermes_gfx_flush(&s_gfx);
+
+  esp_err_t err = hermes_wifi_select(idx);
+  if (err == ESP_OK) {
+    snprintf(s_status, sizeof(s_status), "on %s", hermes_wifi_net(idx)->ssid);
+  } else if (err == ESP_ERR_NOT_FOUND) {
+    snprintf(s_status, sizeof(s_status), "not in range");
+  } else {
+    snprintf(s_status, sizeof(s_status), "kept prior wifi (no internet)");
+  }
+  hermes_wifi_refresh_scan();
+  s_inet_checked_at = 0; /* force recheck after switch */
+  mark_dirty();
+}
+
+static void render_lcd(void) {
+  hermes_gfx_clear(&s_gfx, COL_BG);
+  switch (s_screen) {
+    case SCR_MENU: draw_menu(); break;
+    case SCR_CODEX: draw_agent("CODEX", &s_codex); break;
+    case SCR_CURSOR: draw_agent("CURSOR", &s_cursor_v); break;
+    case SCR_STATUS: draw_status(); break;
+    case SCR_SETTINGS: draw_settings(); break;
+    case SCR_WIFI: draw_wifi(); break;
+  }
+  hermes_gfx_flush(&s_gfx);
+}
+
+static void menu_move(int delta, int *idx, int n) {
+  if (n <= 0) return;
+  *idx = (*idx + delta + n) % n;
+  mark_dirty();
+}
+
+static void go_menu(void) {
+  s_screen = SCR_MENU;
+  s_agent_depth = 0;
+  mark_dirty();
+}
+
+static void activate_menu(void) {
+  switch (s_menu_idx) {
+    case 0:
+      s_screen = SCR_CODEX;
+      s_agent_depth = 0;
+      s_chat_idx = 0;
+      hermes_mqtt_publish_up("{\"type\":\"refresh_chats\",\"agent\":\"codex\"}");
+      mark_dirty();
+      break;
+    case 1:
+      s_screen = SCR_CURSOR;
+      s_agent_depth = 0;
+      s_chat_idx = 0;
+      mark_dirty();
+      break;
+    case 2: s_screen = SCR_STATUS; mark_dirty(); break;
+    case 3: s_screen = SCR_SETTINGS; s_settings_idx = 0; mark_dirty(); break;
+    case 4:
+      s_screen = SCR_WIFI;
+      s_wifi_idx = hermes_wifi_active_index();
+      hermes_wifi_refresh_scan();
+      mark_dirty();
+      break;
+    case 5: do_switch_off(); break;
+  }
+}
+
+static void activate_settings(void) {
+  if (s_settings_idx == 0) {
+    s_theme = (hermes_theme_t)((s_theme + 1) % THEME_COUNT);
+    hermes_theme_apply(s_theme);
+    hermes_settings_save(s_theme, s_brightness);
+    mark_dirty();
+  } else if (s_settings_idx == 1) {
+    if (s_brightness < 100) s_brightness = (uint8_t)(s_brightness + 15);
+    if (s_brightness > 100) s_brightness = 100;
+    hermes_display_set_brightness(s_brightness);
+    hermes_settings_save(s_theme, s_brightness);
+    mark_dirty();
+  } else if (s_settings_idx == 2) {
+    if (s_brightness > 15) s_brightness = (uint8_t)(s_brightness - 15);
+    else s_brightness = 5;
+    hermes_display_set_brightness(s_brightness);
+    hermes_settings_save(s_theme, s_brightness);
+    mark_dirty();
+  } else {
+    go_menu();
+  }
+}
+
+static void activate_agent(void) {
+  agent_view_t *a = agent_for_screen(s_screen);
+  if (!a) return;
+  if (s_agent_depth == 0) {
+    if (a->chat_n == 0) {
+      hermes_mqtt_publish_up("{\"type\":\"refresh_chats\",\"agent\":\"codex\"}");
+      mark_dirty();
+      return;
+    }
+    if (s_chat_idx < 0 || s_chat_idx >= a->chat_n) s_chat_idx = 0;
+    /* Ask bridge to resume this thread and send history. */
+    if (a->chats[s_chat_idx].id[0] && s_screen == SCR_CODEX) {
+      char json[128];
+      snprintf(json, sizeof(json),
+               "{\"type\":\"select_chat\",\"agent\":\"codex\",\"id\":\"%s\"}",
+               a->chats[s_chat_idx].id);
+      hermes_mqtt_publish_up(json);
+      agent_clear_log(a);
+    }
+    s_agent_depth = 1;
+    s_approve_idx = 0;
+    mark_dirty();
+    return;
+  }
+  if (a->approval_id[0]) {
+    if (s_approve_idx == 0) {
+      publish_approval(true);
+    } else if (s_approve_idx == 1) {
+      a->auto_approve = true;
+      publish_approval(true);
+    } else {
+      a->auto_approve = false;
+      publish_approval(false);
+    }
+    mark_dirty();
+  }
+}
+
+static void handle_tap(void) {
+  if (s_screen == SCR_MENU) activate_menu();
+  else if (s_screen == SCR_SETTINGS) activate_settings();
+  else if (s_screen == SCR_WIFI) activate_wifi();
+  else if (s_screen == SCR_CODEX || s_screen == SCR_CURSOR) activate_agent();
+  else if (s_screen == SCR_STATUS) go_menu();
+}
+
+static void handle_gesture(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+  int dx = (int)x1 - (int)x0;
+  int dy = (int)y1 - (int)y0;
+  int adx = dx < 0 ? -dx : dx;
+  int ady = dy < 0 ? -dy : dy;
+
+  if (ady >= SWIPE_MIN && ady > adx) {
+    int dir = (dy < 0) ? -1 : +1; /* swipe up = previous */
+    if (s_screen == SCR_MENU) menu_move(dir, &s_menu_idx, MENU_N);
+    else if (s_screen == SCR_SETTINGS) menu_move(dir, &s_settings_idx, SETT_N);
+    else if (s_screen == SCR_WIFI) menu_move(dir, &s_wifi_idx, hermes_wifi_count());
+    else if (s_screen == SCR_CODEX || s_screen == SCR_CURSOR) {
+      agent_view_t *a = agent_for_screen(s_screen);
+      if (s_agent_depth == 0) menu_move(dir, &s_chat_idx, a->chat_n > 0 ? a->chat_n : 1);
+      else if (a->approval_id[0]) menu_move(dir, &s_approve_idx, APPROVE_N);
+    }
+    return;
+  }
+  if (adx < TAP_SLOP && ady < TAP_SLOP) handle_tap();
 }
 
 void hermes_ui_on_down_json(const char *json, int len) {
+  if (!s_ready_ui) return;
   char *buf = calloc(1, (size_t)len + 1);
   if (!buf) return;
   memcpy(buf, json, (size_t)len);
   cJSON *root = cJSON_Parse(buf);
   free(buf);
   if (!root) return;
+  if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
 
   const cJSON *type = cJSON_GetObjectItem(root, "type");
   if (cJSON_IsString(type)) {
@@ -93,69 +606,204 @@ void hermes_ui_on_down_json(const char *json, int len) {
       const cJSON *agent = cJSON_GetObjectItem(root, "agent");
       const cJSON *summary = cJSON_GetObjectItem(root, "summary");
       const cJSON *state = cJSON_GetObjectItem(root, "state");
-      if (cJSON_IsString(agent)) strncpy(s_agent, agent->valuestring, sizeof(s_agent) - 1);
+      agent_view_t *a = &s_codex;
+      if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
       if (cJSON_IsString(summary)) strncpy(s_status, summary->valuestring, sizeof(s_status) - 1);
-      if (cJSON_IsString(state)) {
-        char tmp[160];
-        snprintf(tmp, sizeof(tmp), "%s: %s", state->valuestring, s_status);
-        strncpy(s_status, tmp, sizeof(s_status) - 1);
-      }
+      if (cJSON_IsString(state)) strncpy(a->state, state->valuestring, sizeof(a->state) - 1);
     } else if (strcmp(type->valuestring, "log") == 0) {
       const cJSON *text = cJSON_GetObjectItem(root, "text");
-      if (cJSON_IsString(text)) strncpy(s_status, text->valuestring, sizeof(s_status) - 1);
+      const cJSON *agent = cJSON_GetObjectItem(root, "agent");
+      agent_view_t *a = &s_codex;
+      if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
+      if (cJSON_IsString(text)) {
+        strncpy(s_status, text->valuestring, sizeof(s_status) - 1);
+        agent_push_log(a, text->valuestring);
+      }
+    } else if (strcmp(type->valuestring, "chats") == 0) {
+      const cJSON *agent = cJSON_GetObjectItem(root, "agent");
+      const cJSON *chats = cJSON_GetObjectItem(root, "chats");
+      agent_view_t *a = &s_codex;
+      if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
+      a->chat_n = 0;
+      if (cJSON_IsArray(chats)) {
+        const cJSON *item = NULL;
+        int i = 0;
+        cJSON_ArrayForEach(item, chats) {
+          if (i >= CHAT_CAP) break;
+          const cJSON *id = cJSON_GetObjectItem(item, "id");
+          const cJSON *title = cJSON_GetObjectItem(item, "title");
+          const cJSON *preview = cJSON_GetObjectItem(item, "preview");
+          const cJSON *live = cJSON_GetObjectItem(item, "live");
+          memset(&a->chats[i], 0, sizeof(a->chats[i]));
+          if (cJSON_IsString(id)) strncpy(a->chats[i].id, id->valuestring, sizeof(a->chats[i].id) - 1);
+          if (cJSON_IsString(title))
+            strncpy(a->chats[i].title, title->valuestring, sizeof(a->chats[i].title) - 1);
+          else
+            strncpy(a->chats[i].title, "chat", sizeof(a->chats[i].title) - 1);
+          if (cJSON_IsString(preview))
+            strncpy(a->chats[i].preview, preview->valuestring, sizeof(a->chats[i].preview) - 1);
+          a->chats[i].live = cJSON_IsTrue(live);
+          i++;
+        }
+        a->chat_n = i;
+        if (s_chat_idx >= a->chat_n) s_chat_idx = 0;
+      }
+    } else if (strcmp(type->valuestring, "chat_lines") == 0) {
+      const cJSON *agent = cJSON_GetObjectItem(root, "agent");
+      const cJSON *lines = cJSON_GetObjectItem(root, "lines");
+      const cJSON *replace = cJSON_GetObjectItem(root, "replace");
+      agent_view_t *a = &s_codex;
+      if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
+      if (cJSON_IsTrue(replace) || replace == NULL) agent_clear_log(a);
+      if (cJSON_IsArray(lines)) {
+        const cJSON *line = NULL;
+        cJSON_ArrayForEach(line, lines) {
+          if (cJSON_IsString(line)) agent_push_log(a, line->valuestring);
+        }
+      }
     } else if (strcmp(type->valuestring, "approval") == 0) {
       const cJSON *id = cJSON_GetObjectItem(root, "id");
+      const cJSON *agent = cJSON_GetObjectItem(root, "agent");
       const cJSON *title = cJSON_GetObjectItem(root, "title");
       const cJSON *detail = cJSON_GetObjectItem(root, "detail");
-      if (cJSON_IsString(id)) strncpy(s_approval_id, id->valuestring, sizeof(s_approval_id) - 1);
-      if (cJSON_IsString(title)) strncpy(s_approval_title, title->valuestring, sizeof(s_approval_title) - 1);
-      if (cJSON_IsString(detail)) strncpy(s_approval_detail, detail->valuestring, sizeof(s_approval_detail) - 1);
-      s_screen = SCREEN_APPROVAL;
+      agent_view_t *a = &s_codex;
+      if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
+      if (cJSON_IsString(id)) strncpy(a->approval_id, id->valuestring, sizeof(a->approval_id) - 1);
+      if (cJSON_IsString(title))
+        strncpy(a->approval_title, title->valuestring, sizeof(a->approval_title) - 1);
+      if (cJSON_IsString(detail))
+        strncpy(a->approval_detail, detail->valuestring, sizeof(a->approval_detail) - 1);
+      strncpy(a->state, "waiting_approval", sizeof(a->state) - 1);
+      if (a->auto_approve && a->approval_id[0]) {
+        char json_up[160];
+        snprintf(json_up, sizeof(json_up), "{\"type\":\"approve\",\"id\":\"%s\"}", a->approval_id);
+        hermes_mqtt_publish_up(json_up);
+        a->approval_id[0] = 0;
+        strncpy(a->state, "running", sizeof(a->state) - 1);
+      } else {
+        s_approve_idx = 0;
+      }
+    } else if (strcmp(type->valuestring, "cursor") == 0) {
+      const cJSON *summary = cJSON_GetObjectItem(root, "summary");
+      if (cJSON_IsString(summary)) {
+        strncpy(s_cursor_v.state, summary->valuestring, sizeof(s_cursor_v.state) - 1);
+        agent_push_log(&s_cursor_v, summary->valuestring);
+      }
     }
   }
   cJSON_Delete(root);
-  render();
+  mark_dirty();
+  if (s_lock) xSemaphoreGive(s_lock);
 }
 
-static void boot_task(void *arg) {
+typedef struct {
+  bool prev;
+  TickType_t down_at;
+} btn_t;
+
+static void ui_task(void *arg) {
+  (void)arg;
+  bool touch_down = false;
+  uint16_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+  btn_t boot = {.prev = true};
+  btn_t pwr = {.prev = true};
+
   gpio_config_t io = {
-      .pin_bit_mask = 1ULL << CONFIG_HERMES_BOOT_GPIO,
+      .pin_bit_mask = (1ULL << HERMES_BOOT_PIN) | (1ULL << HERMES_PWR_PIN),
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_ENABLE,
-      .pull_down_en = GPIO_PULLDOWN_DISABLE,
-      .intr_type = GPIO_INTR_DISABLE,
   };
   gpio_config(&io);
 
-  bool prev = true;
-  TickType_t down_at = 0;
+  TickType_t last_status = 0;
+
   while (1) {
-    bool level = gpio_get_level(CONFIG_HERMES_BOOT_GPIO); // active low
-    if (prev && !level) {
-      down_at = xTaskGetTickCount();
-    } else if (!prev && level) {
-      TickType_t held = xTaskGetTickCount() - down_at;
-      bool long_press = held > pdMS_TO_TICKS(1000);
-      if (s_screen == SCREEN_STATUS) {
-        s_screen = SCREEN_APPROVAL;
-        if (s_approval_id[0] == '\0') s_screen = SCREEN_PROMPT;
-      } else if (s_screen == SCREEN_APPROVAL) {
-        if (long_press) send_approve(true);
-        else send_approve(false);
-      } else {
-        if (long_press) send_prompt(PRESETS[s_prompt_idx]);
-        else s_prompt_idx = (s_prompt_idx + 1) % (int)(sizeof(PRESETS) / sizeof(PRESETS[0]));
-      }
-      render();
+    if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+    if (s_dirty || (s_screen == SCR_STATUS && (xTaskGetTickCount() - last_status) > pdMS_TO_TICKS(1000))) {
+      s_dirty = false;
+      last_status = xTaskGetTickCount();
+      render_lcd();
     }
-    prev = level;
-    vTaskDelay(pdMS_TO_TICKS(30));
+    if (s_lock) xSemaphoreGive(s_lock);
+
+    bool pressed = false;
+    uint16_t tx = 0, ty = 0;
+    hermes_touch_read(&pressed, &tx, &ty);
+    if (pressed) {
+      if (!touch_down) {
+        touch_down = true;
+        x0 = x1 = tx;
+        y0 = y1 = ty;
+      } else {
+        x1 = tx;
+        y1 = ty;
+      }
+    } else if (touch_down) {
+      touch_down = false;
+      if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+      handle_gesture(x0, y0, x1, y1);
+      if (s_lock) xSemaphoreGive(s_lock);
+    }
+
+    /* BOOT: short = back to menu / move; long unused here */
+    bool boot_lvl = gpio_get_level(HERMES_BOOT_PIN);
+    if (boot.prev && !boot_lvl) boot.down_at = xTaskGetTickCount();
+    else if (!boot.prev && boot_lvl) {
+      TickType_t held = xTaskGetTickCount() - boot.down_at;
+      if (held < pdMS_TO_TICKS(BTN_LONG_MS)) {
+        if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+        if (s_screen == SCR_MENU) menu_move(+1, &s_menu_idx, MENU_N);
+        else go_menu();
+        if (s_lock) xSemaphoreGive(s_lock);
+      }
+    }
+    boot.prev = boot_lvl;
+
+    /* PWR: short = back to menu; long = switch off (boot-off screen) */
+    bool pwr_lvl = gpio_get_level(HERMES_PWR_PIN);
+    if (pwr.prev && !pwr_lvl) pwr.down_at = xTaskGetTickCount();
+    else if (!pwr.prev && pwr_lvl) {
+      TickType_t held = xTaskGetTickCount() - pwr.down_at;
+      if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+      if (held >= pdMS_TO_TICKS(BTN_LONG_MS)) {
+        boot_screen(true); /* never returns */
+      } else if ((s_screen == SCR_CODEX || s_screen == SCR_CURSOR) && s_agent_depth > 0) {
+        s_agent_depth = 0;
+        mark_dirty();
+      } else {
+        go_menu();
+      }
+      if (s_lock) xSemaphoreGive(s_lock);
+    }
+    pwr.prev = pwr_lvl;
+
+    vTaskDelay(pdMS_TO_TICKS(20));
   }
 }
 
 esp_err_t hermes_ui_start(void) {
-  ESP_LOGI(TAG, "console UI (LVGL/touch can replace this when Waveshare BSP is linked)");
-  render();
-  xTaskCreate(boot_task, "hermes_boot", 4096, NULL, 5, NULL);
+  s_lock = xSemaphoreCreateMutex();
+
+  if (hermes_sd_mount() == ESP_OK) {
+    hermes_settings_load(&s_theme, &s_brightness);
+  }
+  hermes_theme_apply(s_theme);
+
+  ESP_ERROR_CHECK(hermes_i2c_init());
+  hermes_power_hold_enable();
+  ESP_ERROR_CHECK(hermes_display_init());
+  hermes_display_set_brightness(s_brightness);
+  if (hermes_touch_init() != ESP_OK) ESP_LOGW(TAG, "touch failed");
+  if (!hermes_gfx_init(&s_gfx)) return ESP_ERR_NO_MEM;
+  adc_init();
+
+  boot_screen(false);
+
+  s_screen = SCR_MENU;
+  s_menu_idx = 0;
+  s_ready_ui = true;
+  render_lcd();
+  xTaskCreate(ui_task, "hermes_ui", 8192, NULL, 5, NULL);
+  ESP_LOGI(TAG, "design_doc UI ready");
   return ESP_OK;
 }

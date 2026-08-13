@@ -21,11 +21,10 @@ menu "Hermes Configuration"
         default "hermes-device"
 
     config HERMES_UI_CONSOLE
-        bool "Use console + BOOT button UI (no LVGL BSP)"
-        default y
+        bool "Also log UI state to UART console"
+        default n
         help
-            Until Waveshare LVGL/touch components are linked, use UART
-            console rendering and the BOOT GPIO for navigation.
+            LCD + touch is the primary UI. Enable this for extra UART dumps.
 
     config HERMES_BOOT_GPIO
         int "BOOT GPIO (active low)"

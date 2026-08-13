@@ -4,6 +4,12 @@ idf_component_register(
     "wifi_connect.c"
     "hermes_mqtt.c"
     "hermes_ui.c"
+    "hermes_i2c.c"
+    "hermes_touch.c"
+    "hermes_gfx.c"
+    "hermes_sd.c"
+    "hermes_settings.c"
+    "display_axs15231b.c"
     "certs_embed.c"
   INCLUDE_DIRS "."
   EMBED_TXTFILES
@@ -18,4 +24,7 @@ idf_component_register(
     mqtt
     json
     driver
+    esp_adc
+    fatfs
+    sdmmc
 )

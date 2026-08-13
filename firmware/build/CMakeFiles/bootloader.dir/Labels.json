@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/CMakeFiles/bootloader"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/CMakeFiles/bootloader.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/CMakeFiles/bootloader-complete.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule"
+		},
+		{
+			"file" : "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"bootloader"
+		],
+		"name" : "bootloader"
+	}
+}

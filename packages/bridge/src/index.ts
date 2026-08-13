@@ -60,9 +60,34 @@ async function main() {
             summary: `Device ${msg.deviceId} linked`,
             updatedAt: new Date().toISOString(),
           });
+          if (codex) await codex.syncChats();
           break;
         case "ping":
           await publishDown({ type: "ack", of: "ping", ok: true });
+          break;
+        case "refresh_chats":
+          if (codex) await codex.syncChats();
+          await publishDown({ type: "ack", of: "refresh_chats", ok: Boolean(codex) });
+          break;
+        case "select_chat":
+          if (!codex) {
+            await publishDown({
+              type: "ack",
+              of: "select_chat",
+              ok: false,
+              error: "codex offline",
+            });
+            break;
+          }
+          {
+            const ok = await codex.selectChat(msg.id);
+            await publishDown({
+              type: "ack",
+              of: "select_chat",
+              ok,
+              error: ok ? undefined : "unknown chat id",
+            });
+          }
           break;
         case "approve":
           if (!codex) {

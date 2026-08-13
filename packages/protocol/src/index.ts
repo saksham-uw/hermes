@@ -17,6 +17,14 @@ export type ApprovalKind =
   | "network"
   | "other";
 
+export type ChatSummary = {
+  id: string;
+  title: string;
+  preview: string;
+  cwd?: string;
+  live?: boolean;
+};
+
 /** Topics under hermes/{userId}/... */
 export function topics(userId: string) {
   const base = `hermes/${userId}`;
@@ -32,7 +40,9 @@ export type DeviceUpMessage =
   | { type: "ping"; ts?: number }
   | { type: "approve"; id: string }
   | { type: "deny"; id: string }
-  | { type: "prompt"; agent: "codex"; text: string };
+  | { type: "prompt"; agent: "codex"; text: string }
+  | { type: "select_chat"; agent: AgentKind; id: string }
+  | { type: "refresh_chats"; agent?: AgentKind };
 
 export type DeviceDownMessage =
   | {
@@ -47,6 +57,20 @@ export type DeviceDownMessage =
       agent: AgentKind;
       text: string;
       truncated?: boolean;
+      chatId?: string;
+    }
+  | {
+      type: "chats";
+      agent: AgentKind;
+      chats: ChatSummary[];
+    }
+  | {
+      type: "chat_lines";
+      agent: AgentKind;
+      id: string;
+      title?: string;
+      lines: string[];
+      replace?: boolean;
     }
   | {
       type: "approval";
