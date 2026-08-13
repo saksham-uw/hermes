@@ -322,19 +322,22 @@ export async function startCodexAdapter(
   };
 
   const publishChatList = async (threads: CodexThread[]) => {
-    const chats: ChatSummary[] = threads.slice(0, 8).map((t) => ({
+    const chats: ChatSummary[] = threads.slice(0, 6).map((t) => ({
       id: t.id,
-      title: threadTitle(t),
+      title: truncateForDisplay(threadTitle(t), 28).text,
       preview: truncateForDisplay(
         (t.preview || t.cwd || t.id || "").toString(),
-        70,
+        40,
       ).text,
-      cwd: t.cwd || undefined,
+      cwd: t.cwd ? truncateForDisplay(t.cwd, 40).text : undefined,
       live: t.id === threadId || isLiveStatus(t.status),
     }));
-    await publishDown({ type: "chats", agent: "codex", chats });
+    const payload = { type: "chats" as const, agent: "codex" as const, chats };
+    const bytes = JSON.stringify(payload).length;
+    console.log(`[codex] publishing chats n=${chats.length} bytes=${bytes}`);
+    await publishDown(payload);
     await setStatus(
-      threads.length ? "idle" : "idle",
+      "idle",
       threads.length
         ? `${threads.length} chat${threads.length === 1 ? "" : "s"}`
         : "No Codex chats yet",
@@ -419,9 +422,8 @@ export async function startCodexAdapter(
       if (target.id !== threadId) {
         await resumeThread(target.id, threadTitle(target));
         await publishChatList(threads);
-      } else if (threadId) {
-        await readAndPublishHistory(threadId, threadTitleCached || threadTitle(target));
       }
+      // Avoid republishing full history every poll — only on resume/select.
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[codex] syncChats failed:", msg);

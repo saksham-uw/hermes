@@ -647,6 +647,7 @@ void hermes_ui_on_down_json(const char *json, int len) {
         }
         a->chat_n = i;
         if (s_chat_idx >= a->chat_n) s_chat_idx = 0;
+        ESP_LOGI(TAG, "chats updated n=%d", a->chat_n);
       }
     } else if (strcmp(type->valuestring, "chat_lines") == 0) {
       const cJSON *agent = cJSON_GetObjectItem(root, "agent");
