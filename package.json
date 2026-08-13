@@ -1,0 +1,23 @@
+{
+  "name": "hermes",
+  "private": true,
+  "version": "0.1.0",
+  "description": "ESP32 remote for Codex (+ Cursor observe) over AWS IoT Core",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @hermes/protocol && npm run build -w @hermes/bridge",
+    "dev:bridge": "npm run dev -w @hermes/bridge",
+    "start:bridge": "npm run start -w @hermes/bridge",
+    "provision:iot": "bash deploy/iot/provision.sh",
+    "simulate:device": "node scripts/simulate-device.mjs",
+    "typecheck": "npm run typecheck -w @hermes/protocol && npm run typecheck -w @hermes/bridge"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "mqtt": "^5.15.2"
+  }
+}

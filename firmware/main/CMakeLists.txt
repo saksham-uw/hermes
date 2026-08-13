@@ -1,0 +1,21 @@
+idf_component_register(
+  SRCS
+    "main.c"
+    "wifi_connect.c"
+    "hermes_mqtt.c"
+    "hermes_ui.c"
+    "certs_embed.c"
+  INCLUDE_DIRS "."
+  EMBED_TXTFILES
+    "${CMAKE_CURRENT_LIST_DIR}/../certs/AmazonRootCA1.pem"
+    "${CMAKE_CURRENT_LIST_DIR}/../certs/device.cert.pem"
+    "${CMAKE_CURRENT_LIST_DIR}/../certs/device.private.key"
+  REQUIRES
+    nvs_flash
+    esp_wifi
+    esp_event
+    esp_netif
+    mqtt
+    json
+    driver
+)

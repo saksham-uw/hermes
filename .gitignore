@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+deploy/iot/out/
+.DS_Store
+
+# Live device credentials from provision:iot (do not commit)
+firmware/certs/device.cert.pem
+firmware/certs/device.private.key
+firmware/certs/device.public.key

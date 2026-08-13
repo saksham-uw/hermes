@@ -1,0 +1,34 @@
+menu "Hermes Configuration"
+
+    config HERMES_WIFI_SSID
+        string "WiFi SSID"
+        default "YOUR_WIFI"
+
+    config HERMES_WIFI_PASSWORD
+        string "WiFi password"
+        default "YOUR_PASSWORD"
+
+    config HERMES_IOT_ENDPOINT
+        string "AWS IoT Core ATS endpoint"
+        default "acp99wijypwjp-ats.iot.us-east-1.amazonaws.com"
+
+    config HERMES_USER_ID
+        string "Hermes user id (topic prefix)"
+        default "saksham"
+
+    config HERMES_THING_NAME
+        string "IoT Thing / MQTT client id"
+        default "hermes-device"
+
+    config HERMES_UI_CONSOLE
+        bool "Use console + BOOT button UI (no LVGL BSP)"
+        default y
+        help
+            Until Waveshare LVGL/touch components are linked, use UART
+            console rendering and the BOOT GPIO for navigation.
+
+    config HERMES_BOOT_GPIO
+        int "BOOT GPIO (active low)"
+        default 0
+
+endmenu

@@ -1,0 +1,18 @@
+[Unit]
+Description=Hermes bridge (Codex + Cursor observe over AWS IoT Core)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/hermes
+EnvironmentFile=-/opt/hermes/.env
+Environment=NODE_ENV=production
+Environment=HERMES_CODEX_SPAWN=true
+ExecStart=/usr/bin/npm run start:bridge
+Restart=on-failure
+RestartSec=3
+# Prefer instance IAM role for IoT SigV4; no keys in the unit file.
+
+[Install]
+WantedBy=multi-user.target

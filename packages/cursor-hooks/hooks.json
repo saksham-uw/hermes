@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "hooks": {
+    "sessionStart": [
+      {
+        "command": ".cursor/scripts/notify.sh sessionStart"
+      }
+    ],
+    "sessionEnd": [
+      {
+        "command": ".cursor/scripts/notify.sh sessionEnd"
+      }
+    ],
+    "afterAgentResponse": [
+      {
+        "command": ".cursor/scripts/notify.sh afterAgentResponse"
+      }
+    ],
+    "beforeShellExecution": [
+      {
+        "command": ".cursor/scripts/notify.sh beforeShellExecution"
+      }
+    ],
+    "afterShellExecution": [
+      {
+        "command": ".cursor/scripts/notify.sh afterShellExecution"
+      }
+    ],
+    "stop": [
+      {
+        "command": ".cursor/scripts/notify.sh stop"
+      }
+    ]
+  }
+}

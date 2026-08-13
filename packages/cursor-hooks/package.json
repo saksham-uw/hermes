@@ -1,0 +1,6 @@
+{
+  "name": "@hermes/cursor-hooks",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Observe-only Cursor hooks that mirror IDE activity to Hermes bridge"
+}
