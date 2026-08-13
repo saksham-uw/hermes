@@ -25,6 +25,11 @@ if ! command -v codex >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v bwrap >/dev/null 2>&1; then
+  echo "bubblewrap (bwrap) not found on PATH. Install with: sudo apt-get install -y bubblewrap" >&2
+  exit 1
+fi
+
 if ! command -v node >/dev/null 2>&1; then
   echo "node is required." >&2
   exit 1

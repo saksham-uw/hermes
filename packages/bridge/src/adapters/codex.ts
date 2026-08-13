@@ -205,7 +205,16 @@ export async function startCodexAdapter(
     child = spawn("codex", args, {
       cwd: config.codexCwd || undefined,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        // Ensure /usr/bin/bwrap is findable without shadowing nvm's node.
+        PATH: (() => {
+          const base = process.env.PATH ?? "";
+          return base.split(":").includes("/usr/bin")
+            ? base
+            : `${base}:/usr/bin:/bin`;
+        })(),
+      },
     });
     child.stdout?.on("data", (d) => process.stdout.write(`[codex-server] ${d}`));
     child.stderr?.on("data", (d) => process.stderr.write(`[codex-server] ${d}`));
