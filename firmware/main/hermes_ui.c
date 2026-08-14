@@ -236,23 +236,22 @@ static void draw_bars(int x, int y, int w, int h, int pct, uint16_t fg) {
   if (fill > 0) hermes_gfx_fill_rect(&s_gfx, x + 1, y + 1, fill, h - 2, fg);
 }
 
+static bool s_approve_sent;
+
 static void publish_approval(int choice) {
-  /* 0=yes 1=always 2=no */
+  /* 0=yes 1=always 2=no — keep ticks up until chat_view confirms. */
   agent_view_t *a = agent_for_screen(s_screen);
-  if (!a || !a->approval_id[0]) return;
+  if (!a || !a->approval_id[0] || s_approve_sent) return;
   char json[192];
   if (choice == 2) {
     snprintf(json, sizeof(json), "{\"type\":\"deny\",\"id\":\"%s\"}", a->approval_id);
-    strncpy(a->state, "idle", sizeof(a->state) - 1);
   } else {
     snprintf(json, sizeof(json), "{\"type\":\"approve\",\"id\":\"%s\",\"always\":%s}",
              a->approval_id, choice == 1 ? "true" : "false");
-    strncpy(a->state, "running", sizeof(a->state) - 1);
   }
   hermes_mqtt_publish_up(json);
-  a->approval_id[0] = 0;
-  a->approval_title[0] = 0;
-  a->approval_detail[0] = 0;
+  s_approve_sent = true;
+  ESP_LOGI(TAG, "approval choice=%d id=%s", choice, a->approval_id);
 }
 
 static void draw_tick(int x, int y, uint16_t col) {
@@ -390,7 +389,7 @@ static void draw_agent(const char *title, agent_view_t *a) {
   y += 28;
   hermes_gfx_text(&s_gfx, 8, y, "CLI", COL_DIM, 1);
   uint16_t stcol = waiting ? COL_WARN : (strcmp(cli, "running") == 0 ? COL_FOCUS : COL_OK);
-  hermes_gfx_text(&s_gfx, 8, y + 10, cli, stcol, 1);
+  hermes_gfx_text(&s_gfx, 8, y + 10, waiting && s_approve_sent ? "sending" : cli, stcol, 1);
 
   int mid_y = top + 2;
   int mid_h = GFX_H - mid_y - 4;
@@ -849,10 +848,15 @@ void hermes_ui_on_down_json(const char *json, int len) {
         a->last[sizeof(a->last) - 1] = 0;
       }
       if (cJSON_IsString(apid) && apid->valuestring[0]) {
-        strncpy(a->approval_id, apid->valuestring, sizeof(a->approval_id) - 1);
-        s_approve_idx = 0;
+        if (strcmp(a->approval_id, apid->valuestring) != 0) {
+          strncpy(a->approval_id, apid->valuestring, sizeof(a->approval_id) - 1);
+          a->approval_id[sizeof(a->approval_id) - 1] = 0;
+          s_approve_idx = 0;
+          s_approve_sent = false;
+        }
       } else {
         a->approval_id[0] = 0;
+        s_approve_sent = false;
       }
       if (cJSON_IsString(apt))
         strncpy(a->approval_title, apt->valuestring, sizeof(a->approval_title) - 1);
@@ -877,6 +881,16 @@ void hermes_ui_on_down_json(const char *json, int len) {
       s_stt_busy = false;
       const cJSON *m = cJSON_GetObjectItem(root, "message");
       if (cJSON_IsString(m)) strncpy(s_status, m->valuestring, sizeof(s_status) - 1);
+    } else if (strcmp(type->valuestring, "ack") == 0) {
+      const cJSON *of = cJSON_GetObjectItem(root, "of");
+      const cJSON *ok = cJSON_GetObjectItem(root, "ok");
+      if (cJSON_IsString(of) &&
+          (strcmp(of->valuestring, "approve") == 0 || strcmp(of->valuestring, "deny") == 0) &&
+          cJSON_IsFalse(ok)) {
+        s_approve_sent = false;
+        const cJSON *err = cJSON_GetObjectItem(root, "error");
+        if (cJSON_IsString(err)) strncpy(s_status, err->valuestring, sizeof(s_status) - 1);
+      }
     } else if (strcmp(type->valuestring, "approval") == 0) {
       const cJSON *id = cJSON_GetObjectItem(root, "id");
       const cJSON *agent = cJSON_GetObjectItem(root, "agent");
@@ -891,6 +905,7 @@ void hermes_ui_on_down_json(const char *json, int len) {
         strncpy(a->approval_detail, detail->valuestring, sizeof(a->approval_detail) - 1);
       strncpy(a->state, "waiting", sizeof(a->state) - 1);
       s_approve_idx = 0;
+      s_approve_sent = false;
     } else if (strcmp(type->valuestring, "cursor") == 0) {
       const cJSON *summary = cJSON_GetObjectItem(root, "summary");
       if (cJSON_IsString(summary)) {

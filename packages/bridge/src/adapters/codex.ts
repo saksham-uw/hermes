@@ -26,6 +26,9 @@ type PendingApproval = {
   kind: ApprovalKind;
   title: string;
   detail: string;
+  keys: string[];
+  method: string;
+  requestedPermissions?: unknown;
 };
 
 type CodexThread = {
@@ -239,7 +242,46 @@ export async function startCodexAdapter(
 ): Promise<CodexAdapter> {
   let child: ChildProcess | null = null;
   const token = ensureToken(config);
-  const pendingApprovals = new Map<string, PendingApproval>();
+  const pendingByKey = new Map<string, PendingApproval>();
+  let lastApprovalDecision: "accept" | "decline" | null = null;
+
+  const uniquePending = (): PendingApproval[] => [...new Set(pendingByKey.values())];
+
+  const rememberPending = (p: PendingApproval) => {
+    for (const k of p.keys) {
+      if (k) pendingByKey.set(k, p);
+    }
+  };
+
+  const forgetPending = (p: PendingApproval) => {
+    for (const [k, v] of pendingByKey) {
+      if (v === p) pendingByKey.delete(k);
+    }
+  };
+
+  const findPending = (id: string): PendingApproval | undefined => {
+    const hit = pendingByKey.get(id);
+    if (hit) return hit;
+    const all = uniquePending();
+    if (all.length === 1) return all[0];
+    return undefined;
+  };
+
+  const approvalResult = (
+    pending: PendingApproval,
+    decision: "accept" | "acceptForSession" | "decline",
+  ): Record<string, unknown> => {
+    if (pending.kind === "permissions") {
+      if (decision === "decline") return { permissions: {}, scope: "turn" };
+      return {
+        permissions: pending.requestedPermissions ?? {},
+        scope: decision === "acceptForSession" ? "session" : "turn",
+      };
+    }
+    /* Strict v2 payload — extra fields are rejected by the server. */
+    return { decision };
+  };
+
   let nextId = 1;
   const rpcWaiters = new Map<
     number | string,
@@ -375,6 +417,13 @@ export async function startCodexAdapter(
     socket.send(JSON.stringify({ id, result }));
   };
 
+  const answerPending = (pending: PendingApproval, result: Record<string, unknown>) => {
+    console.log(
+      `[codex] approval reply id=${String(pending.rpcId)} kind=${pending.kind} ${JSON.stringify(result)}`,
+    );
+    respond(pending.rpcId, result);
+  };
+
   const listThreads = async (): Promise<CodexThread[]> => {
     const attempts: Array<Record<string, unknown>> = [
       {
@@ -464,7 +513,7 @@ export async function startCodexAdapter(
 
   const publishChatView = async (force = false) => {
     if (!threadId) return;
-    const pending = [...pendingApprovals.values()][0];
+    const pending = uniquePending()[0];
     const waiting = cli === "waiting" && pending;
     const payload = {
       type: "chat_view" as const,
@@ -581,7 +630,6 @@ export async function startCodexAdapter(
     const params = (msg.params ?? {}) as Record<string, unknown>;
 
     if (method.endsWith("/requestApproval") && msg.id !== undefined && msg.id !== null) {
-      const approvalId = String(msg.id);
       let kind: ApprovalKind = "other";
       if (method.includes("commandExecution")) kind = "command";
       else if (method.includes("fileChange")) kind = "file_change";
@@ -605,16 +653,46 @@ export async function startCodexAdapter(
         400,
       ).text;
 
-      pendingApprovals.set(approvalId, {
+      const extraId =
+        typeof params.approvalId === "string"
+          ? params.approvalId
+          : typeof params.itemId === "string"
+            ? params.itemId
+            : "";
+      const pending: PendingApproval = {
         rpcId: msg.id,
         kind,
         title,
         detail,
-      });
+        method,
+        keys: [String(msg.id), extraId].filter(Boolean),
+        requestedPermissions: params.permissions,
+      };
+      rememberPending(pending);
+      lastApprovalDecision = null;
+      console.log(
+        `[codex] approval request method=${method} id=${String(msg.id)} keys=${pending.keys.join(",")}`,
+      );
 
       await setStatus("waiting_approval", title);
       cli = "waiting";
       await publishChatView(true);
+      return;
+    }
+
+    if (method === "serverRequest/resolved") {
+      const requestId = params.requestId;
+      const pending =
+        (typeof requestId === "string" || typeof requestId === "number"
+          ? findPending(String(requestId))
+          : undefined) || uniquePending()[0];
+      if (pending) forgetPending(pending);
+      if (uniquePending().length === 0) {
+        cli = lastApprovalDecision === "decline" ? "idle" : "running";
+        lastApprovalDecision = null;
+        await setStatus(cli === "idle" ? "idle" : "running", "Approval resolved");
+        await publishChatView(true);
+      }
       return;
     }
 
@@ -637,13 +715,18 @@ export async function startCodexAdapter(
     }
 
     if (method === "turn/started") {
+      if (uniquePending().length) {
+        cli = "waiting";
+        await publishChatView(true);
+        return;
+      }
       cli = "running";
       await setStatus("running", "Turn started");
       await publishChatView(true);
       return;
     }
     if (method === "turn/completed") {
-      cli = pendingApprovals.size ? "waiting" : "idle";
+      cli = uniquePending().length ? "waiting" : "idle";
       await setStatus(cli === "waiting" ? "waiting_approval" : "idle", "Turn completed");
       if (threadId) await loadLastFromThread(threadId);
       await refreshQuota();
@@ -685,28 +768,27 @@ export async function startCodexAdapter(
 
   return {
     async handleApprove(id, always) {
-      const pending = pendingApprovals.get(id);
-      if (!pending) return false;
-      pendingApprovals.delete(id);
-      const decision = always ? "acceptForSession" : "accept";
-      respond(pending.rpcId, { decision, accept: true, approved: true });
-      cli = "running";
-      await setStatus("running", always ? "Always allowed" : "Approved");
-      await publishChatView(true);
+      const pending = findPending(id);
+      if (!pending) {
+        console.warn(
+          `[codex] approve missed id=${id} pending=${[...pendingByKey.keys()].join(",") || "none"}`,
+        );
+        return false;
+      }
+      lastApprovalDecision = "accept";
+      answerPending(pending, approvalResult(pending, always ? "acceptForSession" : "accept"));
       return true;
     },
     async handleDeny(id) {
-      const pending = pendingApprovals.get(id);
-      if (!pending) return false;
-      pendingApprovals.delete(id);
-      respond(pending.rpcId, {
-        decision: "decline",
-        accept: false,
-        approved: false,
-      });
-      cli = "idle";
-      await setStatus("idle", "Denied");
-      await publishChatView(true);
+      const pending = findPending(id);
+      if (!pending) {
+        console.warn(
+          `[codex] deny missed id=${id} pending=${[...pendingByKey.keys()].join(",") || "none"}`,
+        );
+        return false;
+      }
+      lastApprovalDecision = "decline";
+      answerPending(pending, approvalResult(pending, "decline"));
       return true;
     },
     async handlePrompt(text) {

@@ -107,14 +107,12 @@ async function main() {
           }
           {
             const ok = await codex.handleApprove(msg.id, msg.always === true);
-            if (!ok) {
-              await publishDown({
-                type: "ack",
-                of: "approve",
-                ok: false,
-                error: "unknown approval id",
-              });
-            }
+            await publishDown({
+              type: "ack",
+              of: "approve",
+              ok,
+              error: ok ? undefined : "unknown approval id",
+            });
           }
           break;
         case "deny":
@@ -129,14 +127,12 @@ async function main() {
           }
           {
             const ok = await codex.handleDeny(msg.id);
-            if (!ok) {
-              await publishDown({
-                type: "ack",
-                of: "deny",
-                ok: false,
-                error: "unknown approval id",
-              });
-            }
+            await publishDown({
+              type: "ack",
+              of: "deny",
+              ok,
+              error: ok ? undefined : "unknown approval id",
+            });
           }
           break;
         case "prompt":
