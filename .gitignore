@@ -13,3 +13,4 @@ firmware/certs/device.private.key
 firmware/certs/device.public.key
 firmware/managed_components/
 firmware/dependencies.lock
+firmware/build/

@@ -1,5 +1,0 @@
-[0/1] Re-running CMake...
--- Building ESP-IDF components for target esp32s3
--- Configuring incomplete, errors occurred!
-FAILED: build.ninja 
-/Users/saksham/.espressif/tools/cmake/3.30.2/CMake.app/Contents/bin/cmake --regenerate-during-build -S"/Users/saksham/Weekend Projects/hermes/firmware" -B"/Users/saksham/Weekend Projects/hermes/firmware/build"
