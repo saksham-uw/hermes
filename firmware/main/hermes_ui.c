@@ -55,8 +55,9 @@ typedef struct {
   char state[24];
   char cwd[40];
   char quota[16];
-  char context[16];
-  char last[280];
+  char model[28];
+  char reasoning[16];
+  char last[2304];
   char approval_id[64];
   char approval_title[64];
   char approval_detail[120];
@@ -75,6 +76,7 @@ static int s_wifi_idx = 0;
 static int s_chat_idx = 0;
 static int s_agent_depth = 0; /* 0=list, 1=chat */
 static int s_approve_idx = 0; /* 0=yes 1=always 2=no */
+static int s_msg_scroll = 0;
 static hermes_theme_t s_theme = THEME_NIGHT;
 static uint8_t s_brightness = 85;
 
@@ -304,21 +306,38 @@ static void draw_agent(const char *title, agent_view_t *a) {
   hermes_gfx_text(&s_gfx, 8, y, "WEEK", COL_DIM, 1);
   hermes_gfx_text(&s_gfx, 8, y + 10, a->quota[0] ? a->quota : "-", COL_FOCUS, 1);
   y += 28;
-  hermes_gfx_text(&s_gfx, 8, y, "CTX", COL_DIM, 1);
-  hermes_gfx_text(&s_gfx, 8, y + 10, a->context[0] ? a->context : "-", COL_TEXT, 1);
+  hermes_gfx_text(&s_gfx, 8, y, "MODEL", COL_DIM, 1);
+  hermes_gfx_text(&s_gfx, 8, y + 10, a->model[0] ? a->model : "-", COL_TEXT, 1);
+  y += 28;
+  hermes_gfx_text(&s_gfx, 8, y, "REASON", COL_DIM, 1);
+  hermes_gfx_text(&s_gfx, 8, y + 10, a->reasoning[0] ? a->reasoning : "-", COL_TEXT, 1);
   y += 28;
   hermes_gfx_text(&s_gfx, 8, y, "CLI", COL_DIM, 1);
   uint16_t stcol = waiting ? COL_WARN : (strcmp(cli, "running") == 0 ? COL_FOCUS : COL_OK);
   hermes_gfx_text(&s_gfx, 8, y + 10, cli, stcol, 1);
 
+  int mid_y = top + 2;
+  int mid_h = GFX_H - mid_y - 4;
+  const char *body = a->last[0] ? a->last : "";
   if (waiting && a->approval_title[0]) {
-    hermes_gfx_text_wrap(&s_gfx, mid_x, top + 2, mid_w, a->approval_title, COL_WARN, 1);
-    hermes_gfx_text_wrap(&s_gfx, mid_x, top + 28, mid_w,
-                        a->last[0] ? a->last : a->approval_detail, COL_TEXT, 1);
-  } else if (strcmp(cli, "running") == 0) {
+    hermes_gfx_text_wrap_clip(&s_gfx, mid_x, mid_y, mid_w, 16, 0, a->approval_title, COL_WARN, 1);
+    mid_y += 18;
+    mid_h -= 18;
+    if (!body[0]) body = a->approval_detail;
+  }
+  if (strcmp(cli, "running") == 0 && !waiting) {
     hermes_gfx_text(&s_gfx, mid_x, top + 40, "(running)", COL_DIM, 1);
-  } else if (a->last[0]) {
-    hermes_gfx_text_wrap(&s_gfx, mid_x, top + 4, mid_w, a->last, COL_TEXT, 1);
+  } else if (body[0]) {
+    int vis = mid_h / 8;
+    if (vis < 1) vis = 1;
+    int total = hermes_gfx_text_wrap_clip(NULL, mid_x, mid_y, mid_w, 0, 0, body, COL_TEXT, 1);
+    int max_scroll = total > vis ? total - vis : 0;
+    if (s_msg_scroll > max_scroll) s_msg_scroll = max_scroll;
+    if (s_msg_scroll < 0) s_msg_scroll = 0;
+    hermes_gfx_text_wrap_clip(&s_gfx, mid_x, mid_y, mid_w, mid_h, s_msg_scroll, body, COL_TEXT, 1);
+    if (max_scroll > 0) {
+      hermes_gfx_text(&s_gfx, mid_x + mid_w - 18, GFX_H - 12, "v^", COL_DIM, 1);
+    }
   } else {
     hermes_gfx_text(&s_gfx, mid_x, top + 40, "(no last message)", COL_DIM, 1);
   }
@@ -578,9 +597,10 @@ static void activate_agent(void) {
       hermes_mqtt_publish_up(json);
       a->last[0] = 0;
     }
-    s_agent_depth = 1;
-    s_approve_idx = 0;
-    mark_dirty();
+      s_agent_depth = 1;
+      s_approve_idx = 0;
+      s_msg_scroll = 0;
+      mark_dirty();
     return;
   }
   if (cli_waiting(a)) {
@@ -624,6 +644,12 @@ static void handle_gesture(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
       agent_view_t *a = agent_for_screen(s_screen);
       if (s_agent_depth == 0) menu_move(dir, &s_chat_idx, a->chat_n > 0 ? a->chat_n : 1);
       else if (cli_waiting(a)) menu_move(dir, &s_approve_idx, APPROVE_N);
+      else {
+        /* swipe up = later lines */
+        s_msg_scroll += (dir < 0) ? 2 : -2;
+        if (s_msg_scroll < 0) s_msg_scroll = 0;
+        mark_dirty();
+      }
     }
     return;
   }
@@ -695,16 +721,28 @@ void hermes_ui_on_down_json(const char *json, int len) {
       if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
       const cJSON *cwd = cJSON_GetObjectItem(root, "cwd");
       const cJSON *quota = cJSON_GetObjectItem(root, "quotaLeft");
-      const cJSON *ctx = cJSON_GetObjectItem(root, "context");
+      const cJSON *model = cJSON_GetObjectItem(root, "model");
+      const cJSON *reason = cJSON_GetObjectItem(root, "reasoning");
       const cJSON *cli = cJSON_GetObjectItem(root, "cli");
       const cJSON *last = cJSON_GetObjectItem(root, "last");
       const cJSON *apid = cJSON_GetObjectItem(root, "approvalId");
       const cJSON *apt = cJSON_GetObjectItem(root, "approvalTitle");
       if (cJSON_IsString(cwd)) strncpy(a->cwd, cwd->valuestring, sizeof(a->cwd) - 1);
       if (cJSON_IsString(quota)) strncpy(a->quota, quota->valuestring, sizeof(a->quota) - 1);
-      if (cJSON_IsString(ctx)) strncpy(a->context, ctx->valuestring, sizeof(a->context) - 1);
+      if (cJSON_IsString(model)) {
+        strncpy(a->model, model->valuestring, sizeof(a->model) - 1);
+        a->model[sizeof(a->model) - 1] = 0;
+      }
+      if (cJSON_IsString(reason)) {
+        strncpy(a->reasoning, reason->valuestring, sizeof(a->reasoning) - 1);
+        a->reasoning[sizeof(a->reasoning) - 1] = 0;
+      }
       if (cJSON_IsString(cli)) strncpy(a->state, cli->valuestring, sizeof(a->state) - 1);
-      if (cJSON_IsString(last)) strncpy(a->last, last->valuestring, sizeof(a->last) - 1);
+      if (cJSON_IsString(last)) {
+        if (strncmp(a->last, last->valuestring, sizeof(a->last) - 1) != 0) s_msg_scroll = 0;
+        strncpy(a->last, last->valuestring, sizeof(a->last) - 1);
+        a->last[sizeof(a->last) - 1] = 0;
+      }
       if (cJSON_IsString(apid) && apid->valuestring[0]) {
         strncpy(a->approval_id, apid->valuestring, sizeof(a->approval_id) - 1);
         s_approve_idx = 0;

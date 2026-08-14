@@ -79,23 +79,34 @@ function extractText(node: unknown): string {
   if (!obj) return "";
   if (typeof obj.text === "string") return obj.text;
   if (typeof obj.content === "string") return obj.content;
-  if (Array.isArray(obj.content)) {
-    return obj.content
-      .map((c) => extractText(c))
-      .filter(Boolean)
-      .join(" ");
-  }
-  if (Array.isArray(obj.parts)) {
-    return obj.parts
-      .map((c) => extractText(c))
-      .filter(Boolean)
-      .join(" ");
+  const chunks = Array.isArray(obj.content)
+    ? obj.content
+    : Array.isArray(obj.parts)
+      ? obj.parts
+      : null;
+  if (chunks) {
+    return chunks.map((c) => extractText(c)).filter(Boolean).join("");
   }
   return "";
 }
 
-function linesFromThread(thread: CodexThread): string[] {
-  const lines: string[] = [];
+const LAST_MAX = 2200;
+
+function toDeviceText(text: string): string {
+  let s = text.replace(/\r\n/g, "\n").replace(/\t/g, "  ");
+  s = s
+    .replace(/[\u201c\u201d\u00ab\u00bb]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u2013\u2014]/g, "-")
+    .replace(/\u2026/g, "...")
+    .replace(/[\u2022\u00b7]/g, "-")
+    .replace(/[^\n\x20-\x7e]/g, "");
+  if (s.length <= LAST_MAX) return s;
+  return s.slice(0, LAST_MAX - 4) + "\n...";
+}
+
+function lastMessageFromThread(thread: CodexThread): string {
+  let last = "";
   const turns = Array.isArray(thread.turns) ? thread.turns : [];
   for (const turn of turns) {
     const t = asRecord(turn);
@@ -114,27 +125,55 @@ function linesFromThread(thread: CodexThread): string[] {
       if (
         typ === "userMessage" ||
         typ === "user" ||
-        (typ === "message" && it.role === "user")
-      ) {
-        lines.push(`> ${truncateForDisplay(text, 110).text}`);
-      } else if (
         typ === "agentMessage" ||
         typ === "agent" ||
         typ === "assistant" ||
-        (typ === "message" && it.role === "assistant")
+        typ === "message"
       ) {
-        lines.push(truncateForDisplay(text, 110).text);
+        last = text;
       }
     }
-    // Some payloads put input on the turn itself.
     if (Array.isArray(t.input)) {
       for (const inp of t.input) {
         const text = extractText(inp);
-        if (text) lines.push(`> ${truncateForDisplay(text, 110).text}`);
+        if (text) last = text;
       }
     }
   }
-  return lines.slice(-36);
+  return toDeviceText(last);
+}
+
+function strField(obj: Record<string, unknown> | null, keys: string[]): string {
+  if (!obj) return "";
+  for (const k of keys) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim()) return v.trim();
+  }
+  return "";
+}
+
+function applyModelMeta(
+  src: unknown,
+  into: { model: string; reasoning: string },
+): void {
+  const modelKeys = ["model", "modelId"];
+  const reasonKeys = ["reasoningEffort", "effort", "model_reasoning_effort"];
+  let model = "";
+  let reasoning = "";
+  const walk = (node: unknown, depth: number): void => {
+    if (depth > 4 || !node) return;
+    const o = asRecord(node);
+    if (!o) return;
+    if (!model) model = strField(o, modelKeys);
+    if (!reasoning) reasoning = strField(o, reasonKeys);
+    for (const [k, v] of Object.entries(o)) {
+      if (k === "turns" || k === "items" || k === "content" || k === "data") continue;
+      walk(v, depth + 1);
+    }
+  };
+  walk(src, 0);
+  if (model) into.model = truncateForDisplay(model, 22).text;
+  if (reasoning) into.reasoning = truncateForDisplay(reasoning, 12).text;
 }
 
 function threadTitle(t: CodexThread): string {
@@ -148,11 +187,6 @@ function threadTitle(t: CodexThread): string {
     return truncateForDisplay(base, 36).text;
   }
   return truncateForDisplay(t.id, 36).text;
-}
-
-function lastMessageFromThread(thread: CodexThread): string {
-  const lines = linesFromThread(thread);
-  return lines.length ? lines[lines.length - 1] : "";
 }
 
 function shortCwd(cwd?: string | null): string {
@@ -199,31 +233,6 @@ function weeklyQuotaLeft(rateLimits: unknown): string {
   return `${left}%`;
 }
 
-function contextLabel(usage: unknown): string {
-  const o = asRecord(usage);
-  if (!o) return "-";
-  const used =
-    (typeof o.lastTotalTokens === "number" && o.lastTotalTokens) ||
-    (typeof o.totalTokens === "number" && o.totalTokens) ||
-    (typeof o.usedTokens === "number" && o.usedTokens) ||
-    (typeof o.inputTokens === "number" && o.inputTokens) ||
-    0;
-  const window =
-    (typeof o.contextWindow === "number" && o.contextWindow) ||
-    (typeof o.contextTokens === "number" && o.contextTokens) ||
-    (typeof o.maxContextTokens === "number" && o.maxContextTokens) ||
-    0;
-  if (window > 0 && used >= 0) {
-    const pct = Math.max(0, Math.min(100, Math.round((used / window) * 100)));
-    return `${pct}%`;
-  }
-  if (used > 0) {
-    if (used >= 1000) return `${(used / 1000).toFixed(used >= 10000 ? 0 : 1)}k`;
-    return `${used}`;
-  }
-  return "-";
-}
-
 export async function startCodexAdapter(
   config: BridgeConfig,
   publishDown: DownPublisher,
@@ -243,9 +252,9 @@ export async function startCodexAdapter(
   let lastMessage = "";
   let cli: CliStatus = "idle";
   let quotaLeft = "-";
-  let contextUsed = "-";
+  let modelLabel = "-";
+  let reasoningLabel = "-";
   let lastViewJson = "";
-  let tokenUsage: unknown = null;
   let ws: WebSocket | null = null;
   let closed = false;
 
@@ -406,6 +415,25 @@ export async function startCodexAdapter(
     throw lastErr instanceof Error ? lastErr : new Error("thread/list failed");
   };
 
+  const mergeMeta = (src: unknown) => {
+    const meta = { model: modelLabel, reasoning: reasoningLabel };
+    applyModelMeta(src, meta);
+    modelLabel = meta.model;
+    reasoningLabel = meta.reasoning;
+  };
+
+  const refreshModel = async () => {
+    try {
+      const res = await send("config/read", { includeLayers: false });
+      mergeMeta(res);
+    } catch (err) {
+      console.warn(
+        "[codex] config/read failed:",
+        err instanceof Error ? err.message : err,
+      );
+    }
+  };
+
   const publishChatList = async (threads: CodexThread[]) => {
     const chats: ChatSummary[] = threads.slice(0, 6).map((t) => ({
       id: t.id,
@@ -444,7 +472,8 @@ export async function startCodexAdapter(
       id: threadId,
       cwd: threadCwd || "-",
       quotaLeft,
-      context: contextUsed,
+      model: modelLabel,
+      reasoning: reasoningLabel,
       cli,
       last: cli === "running" ? "" : lastMessage,
       approvalId: waiting ? String(pending.rpcId) : undefined,
@@ -454,7 +483,7 @@ export async function startCodexAdapter(
     if (!force && json === lastViewJson) return;
     lastViewJson = json;
     console.log(
-      `[codex] chat_view cli=${cli} cwd=${payload.cwd} quota=${quotaLeft} ctx=${contextUsed} bytes=${json.length}`,
+      `[codex] chat_view cli=${cli} cwd=${payload.cwd} quota=${quotaLeft} model=${modelLabel} reason=${reasoningLabel} bytes=${json.length}`,
     );
     await publishDown(payload);
   };
@@ -467,6 +496,8 @@ export async function startCodexAdapter(
       })) as { thread?: CodexThread };
       const thread = read?.thread;
       if (thread?.cwd) threadCwd = shortCwd(thread.cwd);
+      mergeMeta(read);
+      mergeMeta(thread);
       lastMessage = thread ? lastMessageFromThread(thread) : lastMessage;
     } catch (err) {
       console.warn("[codex] thread/read failed:", err);
@@ -480,11 +511,13 @@ export async function startCodexAdapter(
     threadId = resumed?.thread?.id || id;
     threadTitleCached = title || threadTitle(resumed?.thread || { id });
     threadCwd = shortCwd(cwd || resumed?.thread?.cwd);
+    mergeMeta(resumed);
+    mergeMeta(resumed?.thread);
     if (cli !== "waiting" && cli !== "running") cli = "idle";
     console.log(`[codex] resumed ${threadId} (${threadTitleCached})`);
     await refreshQuota();
+    await refreshModel();
     await loadLastFromThread(threadId);
-    contextUsed = contextLabel(tokenUsage);
     await publishChatView(true);
   };
 
@@ -594,9 +627,6 @@ export async function startCodexAdapter(
     }
 
     if (method === "thread/tokenUsage/updated") {
-      tokenUsage = params.tokenUsage || params.usage || params;
-      contextUsed = contextLabel(tokenUsage);
-      await publishChatView();
       return;
     }
 
@@ -626,8 +656,7 @@ export async function startCodexAdapter(
         const typ = typeof item.type === "string" ? item.type : "";
         const text = extractText(item);
         if (text && (typ === "userMessage" || typ === "agentMessage")) {
-          const prefix = typ === "userMessage" ? "> " : "";
-          lastMessage = truncateForDisplay(prefix + text, 280).text;
+          lastMessage = toDeviceText(text);
           if (cli !== "running") await publishChatView();
         }
       }
@@ -642,14 +671,16 @@ export async function startCodexAdapter(
     void setStatus("offline", "Codex websocket closed");
   });
 
-  await send("initialize", {
+  const init = await send("initialize", {
     clientInfo: { name: "hermes-bridge", version: "0.1.0" },
     capabilities: { experimentalApi: true },
   });
+  mergeMeta(init);
   notify("initialized", {});
 
   // Attach to existing Codex chats — snapshots only, no stream, no poll.
   await refreshQuota();
+  await refreshModel();
   await runSyncChats({ follow: true });
 
   return {
@@ -689,7 +720,7 @@ export async function startCodexAdapter(
         threadTitleCached = "new session";
       }
       if (!threadId) throw new Error("No Codex thread");
-      lastMessage = `> ${truncateForDisplay(trimmed, 280).text}`;
+      lastMessage = toDeviceText(trimmed);
       cli = "running";
       await setStatus("running", truncateForDisplay(trimmed, 80).text);
       await send("turn/start", {

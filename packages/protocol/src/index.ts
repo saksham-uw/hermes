@@ -73,7 +73,8 @@ export type DeviceDownMessage =
       id: string;
       cwd: string;
       quotaLeft: string;
-      context: string;
+      model: string;
+      reasoning: string;
       cli: CliStatus;
       last: string;
       approvalId?: string;

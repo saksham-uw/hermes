@@ -275,27 +275,42 @@ void hermes_gfx_text_centered(hermes_gfx_t *g, int y, const char *s, uint16_t fg
   hermes_gfx_text(g, (GFX_W - w) / 2, y, s, fg, scale);
 }
 
-int hermes_gfx_text_wrap(hermes_gfx_t *g, int x, int y, int max_w, const char *s, uint16_t fg,
-                         int scale) {
-  if (!s) return y;
+int hermes_gfx_text_wrap_clip(hermes_gfx_t *g, int x, int y0, int max_w, int max_h, int skip_lines,
+                             const char *s, uint16_t fg, int scale) {
+  if (!s || !s[0]) return 0;
+  if (scale < 1) scale = 1;
   int advance = 6 * scale;
   int line_h = 8 * scale;
-  int cx = x;
-  int max_x = x + max_w;
-  while (*s) {
-    if (*s == '\n' || cx + advance > max_x) {
-      cx = x;
-      y += line_h;
-      if (*s == '\n') {
-        s++;
-        continue;
+  int cols = max_w / advance;
+  if (cols < 1) cols = 1;
+  int line = 0;
+  int col = 0;
+  for (const char *p = s; *p; p++) {
+    if (*p == '\r') continue;
+    if (*p == '\n') {
+      line++;
+      col = 0;
+      continue;
+    }
+    if (col >= cols) {
+      line++;
+      col = 0;
+    }
+    if (g && line >= skip_lines) {
+      int y = y0 + (line - skip_lines) * line_h;
+      if (max_h <= 0 || y + line_h <= y0 + max_h) {
+        hermes_gfx_char(g, x + col * advance, y, *p, fg, scale);
       }
     }
-    hermes_gfx_char(g, cx, y, *s, fg, scale);
-    cx += advance;
-    s++;
+    col++;
   }
-  return y + line_h;
+  return line + 1;
+}
+
+int hermes_gfx_text_wrap(hermes_gfx_t *g, int x, int y, int max_w, const char *s, uint16_t fg,
+                         int scale) {
+  int lines = hermes_gfx_text_wrap_clip(g, x, y, max_w, 0, 0, s, fg, scale);
+  return y + lines * 8 * (scale < 1 ? 1 : scale);
 }
 
 void hermes_gfx_flush(hermes_gfx_t *g) {

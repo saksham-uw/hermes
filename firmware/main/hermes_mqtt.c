@@ -125,7 +125,7 @@ esp_err_t hermes_mqtt_start(hermes_down_cb_t on_down) {
       .credentials.authentication.key = hermes_device_key_start,
       .credentials.authentication.key_len = key_len,
       .session.keepalive = 30,
-      .buffer.size = 4096,
+      .buffer.size = 8192,
       .buffer.out_size = 2048,
   };
 

@@ -50,6 +50,9 @@ int hermes_gfx_text_width(const char *s, int scale);
 void hermes_gfx_text_centered(hermes_gfx_t *g, int y, const char *s, uint16_t fg, int scale);
 int hermes_gfx_text_wrap(hermes_gfx_t *g, int x, int y, int max_w, const char *s, uint16_t fg,
                          int scale);
+/* Wrap with newlines preserved. skip_lines scrolls; max_h clips. Returns total lines. */
+int hermes_gfx_text_wrap_clip(hermes_gfx_t *g, int x, int y, int max_w, int max_h, int skip_lines,
+                             const char *s, uint16_t fg, int scale);
 /* Draw design-doc HERMES FIGlet logo. Returns y below logo. */
 int hermes_gfx_draw_hermes_logo(hermes_gfx_t *g, int x, int y, uint16_t fg, int scale);
 void hermes_gfx_flush(hermes_gfx_t *g);
