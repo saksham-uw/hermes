@@ -8,8 +8,15 @@ PORT="${HERMES_STT_PORT:-8765}"
 MODEL="${HERMES_STT_MODEL:-tiny.en}"
 
 mkdir -p "$(dirname "$VENV")"
-sudo apt-get update -y
-sudo apt-get install -y python3-venv python3-pip ffmpeg
+
+# Don't let an unrelated apt source (e.g. unsigned gh CLI) abort setup.
+if ! sudo apt-get update -y; then
+  echo "[stt] apt-get update had errors (ignored). Trying install from cache."
+fi
+sudo apt-get install -y python3-venv python3-pip ffmpeg || {
+  echo "[stt] apt install failed. If python3-venv is already present, continuing."
+  command -v python3 >/dev/null
+}
 
 if [[ ! -x "$VENV/bin/python" ]]; then
   python3 -m venv "$VENV"
