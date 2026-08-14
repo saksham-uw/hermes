@@ -320,6 +320,14 @@ static void send_draft(void) {
   mark_dirty();
 }
 
+static void finish_voice_if_needed(void) {
+  if (hermes_audio_recording() || hermes_audio_clip_ready()) {
+    hermes_audio_stop_and_upload();
+    s_stt_busy = true;
+    mark_dirty();
+  }
+}
+
 static void draft_del(int n) {
   int len = (int)strlen(s_draft);
   if (n > len) n = len;
@@ -948,8 +956,13 @@ static void ui_task(void *arg) {
         if (ty < split) {
           s_bksp_ticks = 0;
           mic_hold++;
-          if (mic_hold == 6 && !hermes_audio_recording() && !s_stt_busy && hermes_audio_ok()) {
+          if (hermes_audio_clip_ready()) {
+            finish_voice_if_needed();
+          } else if (mic_hold == 6 && !hermes_audio_recording() && !s_stt_busy &&
+                     hermes_audio_ok()) {
             hermes_audio_start();
+            mark_dirty();
+          } else if (hermes_audio_recording() && (mic_hold % 8) == 0) {
             mark_dirty();
           }
         } else {
@@ -965,11 +978,7 @@ static void ui_task(void *arg) {
     } else if (touch_down) {
       touch_down = false;
       mic_hold = 0;
-      if (hermes_audio_recording()) {
-        hermes_audio_stop_and_upload();
-        s_stt_busy = true;
-        mark_dirty();
-      }
+      finish_voice_if_needed();
       if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
       handle_gesture(x0, y0, x1, y1);
       if (s_lock) xSemaphoreGive(s_lock);

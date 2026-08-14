@@ -71,6 +71,7 @@ static void rec_task(void *arg) {
     s_pcm_bytes += frames * 2;
   }
   free(tmp);
+  if (s_recording) ESP_LOGI(TAG, "rec hit %d ms cap (%d bytes)", REC_MAX_MS, s_pcm_bytes);
   s_recording = false;
   vTaskDelete(NULL);
 }
@@ -205,9 +206,10 @@ esp_err_t hermes_audio_init(void) {
 
 bool hermes_audio_ok(void) { return s_ok; }
 bool hermes_audio_recording(void) { return s_recording; }
+bool hermes_audio_clip_ready(void) { return s_pcm && !s_recording; }
 
 esp_err_t hermes_audio_start(void) {
-  if (!s_ok || s_recording) return ESP_ERR_INVALID_STATE;
+  if (!s_ok || s_recording || s_pcm) return ESP_ERR_INVALID_STATE;
   s_pcm_cap = SAMPLE_HZ * 2 * REC_MAX_MS / 1000;
   s_pcm = heap_caps_malloc((size_t)s_pcm_cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
   if (!s_pcm) s_pcm = malloc((size_t)s_pcm_cap);

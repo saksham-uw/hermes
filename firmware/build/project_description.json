@@ -1,7 +1,7 @@
 {
     "version":            "1.1",
     "project_name":       "hermes",
-    "project_version":    "02b63f0-dirty",
+    "project_version":    "31b6459-dirty",
     "project_path":       "/Users/saksham/Weekend Projects/hermes/firmware",
     "idf_path":           "/Users/saksham/.espressif/v5.3.2/esp-idf",
     "build_dir":          "/Users/saksham/Weekend Projects/hermes/firmware/build",
