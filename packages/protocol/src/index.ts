@@ -10,6 +10,9 @@ export type AgentState =
   | "error"
   | "offline";
 
+/** Compact CLI status shown on the device chat pane. */
+export type CliStatus = "idle" | "running" | "waiting";
+
 export type ApprovalKind =
   | "command"
   | "file_change"
@@ -38,7 +41,7 @@ export function topics(userId: string) {
 export type DeviceUpMessage =
   | { type: "hello"; deviceId: string; firmware?: string }
   | { type: "ping"; ts?: number }
-  | { type: "approve"; id: string }
+  | { type: "approve"; id: string; always?: boolean }
   | { type: "deny"; id: string }
   | { type: "prompt"; agent: "codex"; text: string }
   | { type: "select_chat"; agent: AgentKind; id: string }
@@ -65,12 +68,16 @@ export type DeviceDownMessage =
       chats: ChatSummary[];
     }
   | {
-      type: "chat_lines";
+      type: "chat_view";
       agent: AgentKind;
       id: string;
-      title?: string;
-      lines: string[];
-      replace?: boolean;
+      cwd: string;
+      quotaLeft: string;
+      context: string;
+      cli: CliStatus;
+      last: string;
+      approvalId?: string;
+      approvalTitle?: string;
     }
   | {
       type: "approval";

@@ -100,7 +100,7 @@ async function main() {
             break;
           }
           {
-            const ok = await codex.handleApprove(msg.id);
+            const ok = await codex.handleApprove(msg.id, msg.always === true);
             if (!ok) {
               await publishDown({
                 type: "ack",

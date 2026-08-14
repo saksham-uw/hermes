@@ -39,6 +39,8 @@ typedef enum {
 #define LOG_CAP 48
 #define LOG_LINE_LEN 120
 #define CHAT_CAP 8
+#define PANE_RIGHT 52
+#define PANE_LEFT 148
 
 typedef struct {
   char id[48];
@@ -48,12 +50,13 @@ typedef struct {
 } chat_item_t;
 
 typedef struct {
-  char lines[LOG_CAP][LOG_LINE_LEN];
-  int count;
-  int head;
   chat_item_t chats[CHAT_CAP];
   int chat_n;
   char state[24];
+  char cwd[40];
+  char quota[16];
+  char context[16];
+  char last[280];
   char approval_id[64];
   char approval_title[64];
   char approval_detail[120];
@@ -93,32 +96,23 @@ static bool internet_cached(void) {
 static const char *MENU[] = {"codex", "cursor", "status", "settings", "wifi", "switch off"};
 static const int MENU_N = 6;
 static const int SETT_N = 4;
-static const char *APPROVE_OPTS[] = {"yes", "always yes", "no"};
 static const int APPROVE_N = 3;
 
 static agent_view_t *agent_for_screen(screen_t scr) {
   return (scr == SCR_CURSOR) ? &s_cursor_v : &s_codex;
 }
 
-static void agent_clear_log(agent_view_t *a) {
-  if (!a) return;
-  a->count = 0;
-  a->head = 0;
-  memset(a->lines, 0, sizeof(a->lines));
+static const char *cli_label(const agent_view_t *a) {
+  if (a->approval_id[0] || strcmp(a->state, "waiting") == 0 ||
+      strcmp(a->state, "waiting_approval") == 0)
+    return "waiting";
+  if (strcmp(a->state, "running") == 0 || strcmp(a->state, "thinking") == 0)
+    return "running";
+  return "idle";
 }
 
-static void agent_push_log(agent_view_t *a, const char *text) {
-  if (!a || !text || !text[0]) return;
-  strncpy(a->lines[a->head], text, LOG_LINE_LEN - 1);
-  a->lines[a->head][LOG_LINE_LEN - 1] = 0;
-  a->head = (a->head + 1) % LOG_CAP;
-  if (a->count < LOG_CAP) a->count++;
-}
-
-static const char *agent_log_at(const agent_view_t *a, int oldest_i) {
-  /* oldest_i = 0 .. count-1 from oldest to newest */
-  int idx = (a->head - a->count + oldest_i + LOG_CAP * 2) % LOG_CAP;
-  return a->lines[idx];
+static bool cli_waiting(const agent_view_t *a) {
+  return strcmp(cli_label(a), "waiting") == 0;
 }
 
 static adc_oneshot_unit_handle_t s_adc;
@@ -230,17 +224,39 @@ static void draw_bars(int x, int y, int w, int h, int pct, uint16_t fg) {
   if (fill > 0) hermes_gfx_fill_rect(&s_gfx, x + 1, y + 1, fill, h - 2, fg);
 }
 
-static void publish_approval(bool allow) {
+static void publish_approval(int choice) {
+  /* 0=yes 1=always 2=no */
   agent_view_t *a = agent_for_screen(s_screen);
   if (!a || !a->approval_id[0]) return;
-  char json[160];
-  snprintf(json, sizeof(json), "{\"type\":\"%s\",\"id\":\"%s\"}", allow ? "approve" : "deny",
-           a->approval_id);
+  char json[192];
+  if (choice == 2) {
+    snprintf(json, sizeof(json), "{\"type\":\"deny\",\"id\":\"%s\"}", a->approval_id);
+    strncpy(a->state, "idle", sizeof(a->state) - 1);
+  } else {
+    snprintf(json, sizeof(json), "{\"type\":\"approve\",\"id\":\"%s\",\"always\":%s}",
+             a->approval_id, choice == 1 ? "true" : "false");
+    strncpy(a->state, "running", sizeof(a->state) - 1);
+  }
   hermes_mqtt_publish_up(json);
   a->approval_id[0] = 0;
   a->approval_title[0] = 0;
   a->approval_detail[0] = 0;
-  strncpy(a->state, allow ? "running" : "idle", sizeof(a->state) - 1);
+}
+
+static void draw_tick(int x, int y, uint16_t col) {
+  /* simple check mark */
+  hermes_gfx_fill_rect(&s_gfx, x + 2, y + 10, 3, 3, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 5, y + 12, 3, 3, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 8, y + 8, 3, 3, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 11, y + 4, 3, 3, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 14, y + 1, 3, 3, col);
+}
+
+static void draw_cross(int x, int y, uint16_t col) {
+  for (int i = 0; i < 14; i++) {
+    hermes_gfx_fill_rect(&s_gfx, x + 2 + i, y + 2 + i, 2, 2, col);
+    hermes_gfx_fill_rect(&s_gfx, x + 16 - i, y + 2 + i, 2, 2, col);
+  }
 }
 
 static void draw_agent(const char *title, agent_view_t *a) {
@@ -248,7 +264,6 @@ static void draw_agent(const char *title, agent_view_t *a) {
   hermes_gfx_hline(&s_gfx, 12, 14, GFX_W - 24, COL_LINE);
 
   if (s_agent_depth == 0) {
-    /* Chat list */
     if (a->chat_n == 0) {
       hermes_gfx_text(&s_gfx, 16, 40, "> (no chats yet)", COL_DIM, 1);
       hermes_gfx_text(&s_gfx, 16, 56, "  waiting for bridge...", COL_DIM, 1);
@@ -270,39 +285,61 @@ static void draw_agent(const char *title, agent_view_t *a) {
     return;
   }
 
-  /* Chat detail / live stream */
-  char head[48];
-  snprintf(head, sizeof(head), "[%s]", a->state[0] ? a->state : "idle");
-  hermes_gfx_text(&s_gfx, 12, 18, head, COL_WARN, 1);
+  /* 3-pane snapshot: left meta | middle last message | right approve icons */
+  const char *cli = cli_label(a);
+  bool waiting = cli_waiting(a);
+  int top = 18;
+  int left_w = PANE_LEFT;
+  int right_w = waiting ? PANE_RIGHT : 0;
+  int mid_x = left_w + 8;
+  int mid_w = GFX_W - mid_x - right_w - 8;
 
-  int y = 30;
-  int max_lines = a->approval_id[0] ? 8 : 12;
-  int start = a->count > max_lines ? a->count - max_lines : 0;
-  if (a->count == 0) {
-    hermes_gfx_text(&s_gfx, 12, y, "(empty — stream when running)", COL_DIM, 1);
+  hermes_gfx_vline(&s_gfx, left_w, top, GFX_H - top - 4, COL_LINE);
+  if (waiting) hermes_gfx_vline(&s_gfx, GFX_W - right_w, top, GFX_H - top - 4, COL_LINE);
+
+  int y = top + 2;
+  hermes_gfx_text(&s_gfx, 8, y, "DIR", COL_DIM, 1);
+  hermes_gfx_text(&s_gfx, 8, y + 10, a->cwd[0] ? a->cwd : "-", COL_TEXT, 1);
+  y += 28;
+  hermes_gfx_text(&s_gfx, 8, y, "WEEK", COL_DIM, 1);
+  hermes_gfx_text(&s_gfx, 8, y + 10, a->quota[0] ? a->quota : "-", COL_FOCUS, 1);
+  y += 28;
+  hermes_gfx_text(&s_gfx, 8, y, "CTX", COL_DIM, 1);
+  hermes_gfx_text(&s_gfx, 8, y + 10, a->context[0] ? a->context : "-", COL_TEXT, 1);
+  y += 28;
+  hermes_gfx_text(&s_gfx, 8, y, "CLI", COL_DIM, 1);
+  uint16_t stcol = waiting ? COL_WARN : (strcmp(cli, "running") == 0 ? COL_FOCUS : COL_OK);
+  hermes_gfx_text(&s_gfx, 8, y + 10, cli, stcol, 1);
+
+  if (waiting && a->approval_title[0]) {
+    hermes_gfx_text_wrap(&s_gfx, mid_x, top + 2, mid_w, a->approval_title, COL_WARN, 1);
+    hermes_gfx_text_wrap(&s_gfx, mid_x, top + 28, mid_w,
+                        a->last[0] ? a->last : a->approval_detail, COL_TEXT, 1);
+  } else if (strcmp(cli, "running") == 0) {
+    hermes_gfx_text(&s_gfx, mid_x, top + 40, "(running)", COL_DIM, 1);
+  } else if (a->last[0]) {
+    hermes_gfx_text_wrap(&s_gfx, mid_x, top + 4, mid_w, a->last, COL_TEXT, 1);
   } else {
-    for (int i = start; i < a->count; i++) {
-      hermes_gfx_text(&s_gfx, 12, y, agent_log_at(a, i), COL_TEXT, 1);
-      y += 10;
-      if (y > GFX_H - 28) break;
-    }
+    hermes_gfx_text(&s_gfx, mid_x, top + 40, "(no last message)", COL_DIM, 1);
   }
 
-  if (a->approval_id[0]) {
-    hermes_gfx_hline(&s_gfx, 12, GFX_H - 36, GFX_W - 24, COL_LINE);
-    if (a->approval_title[0]) {
-      hermes_gfx_text(&s_gfx, 12, GFX_H - 34, a->approval_title, COL_WARN, 1);
-    }
-    int x = 12;
-    for (int i = 0; i < APPROVE_N; i++) {
+  if (waiting) {
+    int slot_h = (GFX_H - top) / 3;
+    int rx = GFX_W - right_w + (right_w - 20) / 2;
+    for (int i = 0; i < 3; i++) {
+      int iy = top + i * slot_h + (slot_h - 18) / 2;
       bool sel = (i == s_approve_idx);
-      char opt[24];
-      snprintf(opt, sizeof(opt), "%s%s", sel ? ">" : " ", APPROVE_OPTS[i]);
-      hermes_gfx_text(&s_gfx, x, GFX_H - 20, opt, sel ? COL_FOCUS : COL_TEXT, 1);
-      x += hermes_gfx_text_width(opt, 1) + 16;
+      uint16_t col = sel ? COL_FOCUS : COL_TEXT;
+      if (sel) hermes_gfx_rect(&s_gfx, GFX_W - right_w + 2, top + i * slot_h + 2, right_w - 6,
+                               slot_h - 4, COL_FOCUS);
+      if (i == 0) draw_tick(rx, iy, col);
+      else if (i == 1) {
+        draw_tick(rx - 6, iy, col);
+        draw_tick(rx + 4, iy, col);
+      } else {
+        draw_cross(rx, iy, sel ? COL_BAD : COL_TEXT);
+      }
     }
-  } else {
-    hermes_gfx_text(&s_gfx, 12, GFX_H - 14, "PWR short = back", COL_DIM, 1);
   }
 }
 
@@ -533,35 +570,38 @@ static void activate_agent(void) {
       return;
     }
     if (s_chat_idx < 0 || s_chat_idx >= a->chat_n) s_chat_idx = 0;
-    /* Ask bridge to resume this thread and send history. */
     if (a->chats[s_chat_idx].id[0] && s_screen == SCR_CODEX) {
       char json[128];
       snprintf(json, sizeof(json),
                "{\"type\":\"select_chat\",\"agent\":\"codex\",\"id\":\"%s\"}",
                a->chats[s_chat_idx].id);
       hermes_mqtt_publish_up(json);
-      agent_clear_log(a);
+      a->last[0] = 0;
     }
     s_agent_depth = 1;
     s_approve_idx = 0;
     mark_dirty();
     return;
   }
-  if (a->approval_id[0]) {
-    if (s_approve_idx == 0) {
-      publish_approval(true);
-    } else if (s_approve_idx == 1) {
-      a->auto_approve = true;
-      publish_approval(true);
-    } else {
-      a->auto_approve = false;
-      publish_approval(false);
-    }
+  if (cli_waiting(a)) {
+    publish_approval(s_approve_idx);
     mark_dirty();
   }
 }
 
-static void handle_tap(void) {
+static void handle_tap(uint16_t x, uint16_t y) {
+  if (s_screen == SCR_CODEX && s_agent_depth == 1 && cli_waiting(&s_codex) &&
+      x >= GFX_W - PANE_RIGHT) {
+    int top = 18;
+    int slot_h = (GFX_H - top) / 3;
+    int slot = ((int)y - top) / slot_h;
+    if (slot < 0) slot = 0;
+    if (slot > 2) slot = 2;
+    s_approve_idx = slot;
+    publish_approval(slot);
+    mark_dirty();
+    return;
+  }
   if (s_screen == SCR_MENU) activate_menu();
   else if (s_screen == SCR_SETTINGS) activate_settings();
   else if (s_screen == SCR_WIFI) activate_wifi();
@@ -583,11 +623,11 @@ static void handle_gesture(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
     else if (s_screen == SCR_CODEX || s_screen == SCR_CURSOR) {
       agent_view_t *a = agent_for_screen(s_screen);
       if (s_agent_depth == 0) menu_move(dir, &s_chat_idx, a->chat_n > 0 ? a->chat_n : 1);
-      else if (a->approval_id[0]) menu_move(dir, &s_approve_idx, APPROVE_N);
+      else if (cli_waiting(a)) menu_move(dir, &s_approve_idx, APPROVE_N);
     }
     return;
   }
-  if (adx < TAP_SLOP && ady < TAP_SLOP) handle_tap();
+  if (adx < TAP_SLOP && ady < TAP_SLOP) handle_tap(x1, y1);
 }
 
 void hermes_ui_on_down_json(const char *json, int len) {
@@ -617,7 +657,7 @@ void hermes_ui_on_down_json(const char *json, int len) {
       if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
       if (cJSON_IsString(text)) {
         strncpy(s_status, text->valuestring, sizeof(s_status) - 1);
-        agent_push_log(a, text->valuestring);
+        if (a == &s_cursor_v) strncpy(a->last, text->valuestring, sizeof(a->last) - 1);
       }
     } else if (strcmp(type->valuestring, "chats") == 0) {
       const cJSON *agent = cJSON_GetObjectItem(root, "agent");
@@ -649,19 +689,33 @@ void hermes_ui_on_down_json(const char *json, int len) {
         if (s_chat_idx >= a->chat_n) s_chat_idx = 0;
         ESP_LOGI(TAG, "chats updated n=%d", a->chat_n);
       }
-    } else if (strcmp(type->valuestring, "chat_lines") == 0) {
+    } else if (strcmp(type->valuestring, "chat_view") == 0) {
       const cJSON *agent = cJSON_GetObjectItem(root, "agent");
-      const cJSON *lines = cJSON_GetObjectItem(root, "lines");
-      const cJSON *replace = cJSON_GetObjectItem(root, "replace");
       agent_view_t *a = &s_codex;
       if (cJSON_IsString(agent) && strcmp(agent->valuestring, "cursor") == 0) a = &s_cursor_v;
-      if (cJSON_IsTrue(replace) || replace == NULL) agent_clear_log(a);
-      if (cJSON_IsArray(lines)) {
-        const cJSON *line = NULL;
-        cJSON_ArrayForEach(line, lines) {
-          if (cJSON_IsString(line)) agent_push_log(a, line->valuestring);
-        }
+      const cJSON *cwd = cJSON_GetObjectItem(root, "cwd");
+      const cJSON *quota = cJSON_GetObjectItem(root, "quotaLeft");
+      const cJSON *ctx = cJSON_GetObjectItem(root, "context");
+      const cJSON *cli = cJSON_GetObjectItem(root, "cli");
+      const cJSON *last = cJSON_GetObjectItem(root, "last");
+      const cJSON *apid = cJSON_GetObjectItem(root, "approvalId");
+      const cJSON *apt = cJSON_GetObjectItem(root, "approvalTitle");
+      if (cJSON_IsString(cwd)) strncpy(a->cwd, cwd->valuestring, sizeof(a->cwd) - 1);
+      if (cJSON_IsString(quota)) strncpy(a->quota, quota->valuestring, sizeof(a->quota) - 1);
+      if (cJSON_IsString(ctx)) strncpy(a->context, ctx->valuestring, sizeof(a->context) - 1);
+      if (cJSON_IsString(cli)) strncpy(a->state, cli->valuestring, sizeof(a->state) - 1);
+      if (cJSON_IsString(last)) strncpy(a->last, last->valuestring, sizeof(a->last) - 1);
+      if (cJSON_IsString(apid) && apid->valuestring[0]) {
+        strncpy(a->approval_id, apid->valuestring, sizeof(a->approval_id) - 1);
+        s_approve_idx = 0;
+      } else {
+        a->approval_id[0] = 0;
       }
+      if (cJSON_IsString(apt))
+        strncpy(a->approval_title, apt->valuestring, sizeof(a->approval_title) - 1);
+      else
+        a->approval_title[0] = 0;
+      ESP_LOGI(TAG, "chat_view cli=%s", a->state);
     } else if (strcmp(type->valuestring, "approval") == 0) {
       const cJSON *id = cJSON_GetObjectItem(root, "id");
       const cJSON *agent = cJSON_GetObjectItem(root, "agent");
@@ -674,21 +728,13 @@ void hermes_ui_on_down_json(const char *json, int len) {
         strncpy(a->approval_title, title->valuestring, sizeof(a->approval_title) - 1);
       if (cJSON_IsString(detail))
         strncpy(a->approval_detail, detail->valuestring, sizeof(a->approval_detail) - 1);
-      strncpy(a->state, "waiting_approval", sizeof(a->state) - 1);
-      if (a->auto_approve && a->approval_id[0]) {
-        char json_up[160];
-        snprintf(json_up, sizeof(json_up), "{\"type\":\"approve\",\"id\":\"%s\"}", a->approval_id);
-        hermes_mqtt_publish_up(json_up);
-        a->approval_id[0] = 0;
-        strncpy(a->state, "running", sizeof(a->state) - 1);
-      } else {
-        s_approve_idx = 0;
-      }
+      strncpy(a->state, "waiting", sizeof(a->state) - 1);
+      s_approve_idx = 0;
     } else if (strcmp(type->valuestring, "cursor") == 0) {
       const cJSON *summary = cJSON_GetObjectItem(root, "summary");
       if (cJSON_IsString(summary)) {
         strncpy(s_cursor_v.state, summary->valuestring, sizeof(s_cursor_v.state) - 1);
-        agent_push_log(&s_cursor_v, summary->valuestring);
+        strncpy(s_cursor_v.last, summary->valuestring, sizeof(s_cursor_v.last) - 1);
       }
     }
   }

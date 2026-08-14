@@ -8,6 +8,7 @@ import {
   truncateForDisplay,
   type ApprovalKind,
   type ChatSummary,
+  type CliStatus,
 } from "@hermes/protocol";
 import type { BridgeConfig } from "../config.js";
 import type { DownPublisher } from "../iot/client.js";
@@ -39,7 +40,7 @@ type CodexThread = {
 };
 
 export type CodexAdapter = {
-  handleApprove: (id: string) => Promise<boolean>;
+  handleApprove: (id: string, always?: boolean) => Promise<boolean>;
   handleDeny: (id: string) => Promise<boolean>;
   handlePrompt: (text: string) => Promise<void>;
   selectChat: (id: string) => Promise<boolean>;
@@ -149,9 +150,78 @@ function threadTitle(t: CodexThread): string {
   return truncateForDisplay(t.id, 36).text;
 }
 
-function isLiveStatus(status?: { type?: string } | null): boolean {
-  const typ = status?.type || "";
-  return typ === "active" || typ === "idle";
+function lastMessageFromThread(thread: CodexThread): string {
+  const lines = linesFromThread(thread);
+  return lines.length ? lines[lines.length - 1] : "";
+}
+
+function shortCwd(cwd?: string | null): string {
+  if (!cwd) return "-";
+  const parts = cwd.split("/").filter(Boolean);
+  if (parts.length <= 2) return truncateForDisplay(cwd, 28).text;
+  return truncateForDisplay(parts.slice(-2).join("/"), 28).text;
+}
+
+function weeklyQuotaLeft(rateLimits: unknown): string {
+  const root = asRecord(rateLimits);
+  if (!root) return "-";
+  const byId = asRecord(root.rateLimitsByLimitId) || asRecord(root);
+  const buckets: Array<{ used?: number; mins?: number }> = [];
+  const collect = (node: unknown) => {
+    const o = asRecord(node);
+    if (!o) return;
+    const primary = asRecord(o.primary) || o;
+    const used =
+      typeof primary.usedPercent === "number"
+        ? primary.usedPercent
+        : typeof o.usedPercent === "number"
+          ? o.usedPercent
+          : undefined;
+    const mins =
+      typeof primary.windowDurationMins === "number"
+        ? primary.windowDurationMins
+        : typeof o.windowDurationMins === "number"
+          ? o.windowDurationMins
+          : undefined;
+    if (typeof used === "number") buckets.push({ used, mins });
+  };
+  collect(root.rateLimits);
+  if (byId) {
+    for (const v of Object.values(byId)) collect(v);
+  }
+  if (!buckets.length) return "-";
+  const weekly = buckets.find((b) => (b.mins || 0) >= 10080);
+  const day = buckets.find((b) => (b.mins || 0) >= 1440);
+  const pick = weekly || day || buckets.reduce((a, b) =>
+    (b.mins || 0) > (a.mins || 0) ? b : a,
+  );
+  const left = Math.max(0, Math.min(100, Math.round(100 - (pick.used || 0))));
+  return `${left}%`;
+}
+
+function contextLabel(usage: unknown): string {
+  const o = asRecord(usage);
+  if (!o) return "-";
+  const used =
+    (typeof o.lastTotalTokens === "number" && o.lastTotalTokens) ||
+    (typeof o.totalTokens === "number" && o.totalTokens) ||
+    (typeof o.usedTokens === "number" && o.usedTokens) ||
+    (typeof o.inputTokens === "number" && o.inputTokens) ||
+    0;
+  const window =
+    (typeof o.contextWindow === "number" && o.contextWindow) ||
+    (typeof o.contextTokens === "number" && o.contextTokens) ||
+    (typeof o.maxContextTokens === "number" && o.maxContextTokens) ||
+    0;
+  if (window > 0 && used >= 0) {
+    const pct = Math.max(0, Math.min(100, Math.round((used / window) * 100)));
+    return `${pct}%`;
+  }
+  if (used > 0) {
+    if (used >= 1000) return `${(used / 1000).toFixed(used >= 10000 ? 0 : 1)}k`;
+    return `${used}`;
+  }
+  return "-";
 }
 
 export async function startCodexAdapter(
@@ -169,9 +239,15 @@ export async function startCodexAdapter(
 
   let threadId: string | null = null;
   let threadTitleCached = "";
+  let threadCwd = "";
+  let lastMessage = "";
+  let cli: CliStatus = "idle";
+  let quotaLeft = "-";
+  let contextUsed = "-";
+  let lastViewJson = "";
+  let tokenUsage: unknown = null;
   let ws: WebSocket | null = null;
   let closed = false;
-  let syncTimer: NodeJS.Timeout | null = null;
 
   const setStatus = async (
     state: "idle" | "thinking" | "running" | "waiting_approval" | "error" | "offline",
@@ -339,71 +415,77 @@ export async function startCodexAdapter(
         40,
       ).text,
       cwd: t.cwd ? truncateForDisplay(t.cwd, 40).text : undefined,
-      live: t.id === threadId || isLiveStatus(t.status),
+      live: t.id === threadId || t.status?.type === "active",
     }));
     const payload = { type: "chats" as const, agent: "codex" as const, chats };
-    const bytes = JSON.stringify(payload).length;
-    console.log(`[codex] publishing chats n=${chats.length} bytes=${bytes}`);
+    console.log(`[codex] publishing chats n=${chats.length}`);
     await publishDown(payload);
-    await setStatus(
-      "idle",
-      threads.length
-        ? `${threads.length} chat${threads.length === 1 ? "" : "s"}`
-        : "No Codex chats yet",
-    );
   };
 
-  const publishHistory = async (id: string, title: string, lines: string[]) => {
-    await publishDown({
-      type: "chat_lines",
-      agent: "codex",
-      id,
-      title,
-      lines,
-      replace: true,
-    });
-    if (lines.length) {
-      await publishDown({
-        type: "log",
-        agent: "codex",
-        text: lines[lines.length - 1],
-        chatId: id,
-      });
+  const refreshQuota = async () => {
+    try {
+      const res = await send("account/rateLimits/read", {});
+      quotaLeft = weeklyQuotaLeft(res);
+    } catch (err) {
+      console.warn(
+        "[codex] rateLimits/read failed:",
+        err instanceof Error ? err.message : err,
+      );
     }
   };
 
-  const readAndPublishHistory = async (id: string, title: string) => {
+  const publishChatView = async (force = false) => {
+    if (!threadId) return;
+    const pending = [...pendingApprovals.values()][0];
+    const waiting = cli === "waiting" && pending;
+    const payload = {
+      type: "chat_view" as const,
+      agent: "codex" as const,
+      id: threadId,
+      cwd: threadCwd || "-",
+      quotaLeft,
+      context: contextUsed,
+      cli,
+      last: cli === "running" ? "" : lastMessage,
+      approvalId: waiting ? String(pending.rpcId) : undefined,
+      approvalTitle: waiting ? pending.title : undefined,
+    };
+    const json = JSON.stringify(payload);
+    if (!force && json === lastViewJson) return;
+    lastViewJson = json;
+    console.log(
+      `[codex] chat_view cli=${cli} cwd=${payload.cwd} quota=${quotaLeft} ctx=${contextUsed} bytes=${json.length}`,
+    );
+    await publishDown(payload);
+  };
+
+  const loadLastFromThread = async (id: string) => {
     try {
       const read = (await send("thread/read", {
         threadId: id,
         includeTurns: true,
       })) as { thread?: CodexThread };
       const thread = read?.thread;
-      const lines = thread ? linesFromThread(thread) : [];
-      await publishHistory(id, title, lines);
-      if (!lines.length) {
-        await publishDown({
-          type: "log",
-          agent: "codex",
-          text: "(thread open — waiting for messages)",
-          chatId: id,
-        });
-      }
+      if (thread?.cwd) threadCwd = shortCwd(thread.cwd);
+      lastMessage = thread ? lastMessageFromThread(thread) : lastMessage;
     } catch (err) {
       console.warn("[codex] thread/read failed:", err);
-      await publishHistory(id, title, []);
     }
   };
 
-  const resumeThread = async (id: string, title?: string) => {
+  const resumeThread = async (id: string, title?: string, cwd?: string | null) => {
     const resumed = (await send("thread/resume", {
       threadId: id,
     })) as { thread?: CodexThread };
     threadId = resumed?.thread?.id || id;
     threadTitleCached = title || threadTitle(resumed?.thread || { id });
+    threadCwd = shortCwd(cwd || resumed?.thread?.cwd);
+    if (cli !== "waiting" && cli !== "running") cli = "idle";
     console.log(`[codex] resumed ${threadId} (${threadTitleCached})`);
-    await setStatus("idle", threadTitleCached);
-    await readAndPublishHistory(threadId, threadTitleCached);
+    await refreshQuota();
+    await loadLastFromThread(threadId);
+    contextUsed = contextLabel(tokenUsage);
+    await publishChatView(true);
   };
 
   const pickFollowThread = (threads: CodexThread[]): CodexThread | null => {
@@ -419,25 +501,22 @@ export async function startCodexAdapter(
       const threads = await listThreads();
       console.log(`[codex] listed ${threads.length} thread(s)`);
       await publishChatList(threads);
-
-      const follow = opts?.follow !== false;
-      if (!follow) return;
-
+      if (opts?.follow === false) return;
       const target = pickFollowThread(threads);
       if (!target) {
         threadId = null;
         return;
       }
       if (target.id !== threadId) {
-        await resumeThread(target.id, threadTitle(target));
+        await resumeThread(target.id, threadTitle(target), target.cwd);
         await publishChatList(threads);
+      } else {
+        await publishChatView();
       }
-      // Avoid republishing full history every poll — only on resume/select.
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[codex] syncChats failed:", msg);
       await setStatus("error", `chat sync: ${truncateForDisplay(msg, 60).text}`);
-      // Still clear the list so the device isn't stuck on a stale stub forever.
       await publishDown({ type: "chats", agent: "codex", chats: [] });
     }
   };
@@ -501,14 +580,8 @@ export async function startCodexAdapter(
       });
 
       await setStatus("waiting_approval", title);
-      await publishDown({
-        type: "approval",
-        id: approvalId,
-        agent: "codex",
-        kind,
-        title,
-        detail,
-      });
+      cli = "waiting";
+      await publishChatView(true);
       return;
     }
 
@@ -520,33 +593,31 @@ export async function startCodexAdapter(
       return;
     }
 
+    if (method === "thread/tokenUsage/updated") {
+      tokenUsage = params.tokenUsage || params.usage || params;
+      contextUsed = contextLabel(tokenUsage);
+      await publishChatView();
+      return;
+    }
+
+    if (method === "account/rateLimits/updated") {
+      quotaLeft = weeklyQuotaLeft(params);
+      await publishChatView();
+      return;
+    }
+
     if (method === "turn/started") {
-      await setStatus("thinking", "Turn started");
+      cli = "running";
+      await setStatus("running", "Turn started");
+      await publishChatView(true);
       return;
     }
     if (method === "turn/completed") {
-      await setStatus("idle", "Turn completed");
-      if (threadId) {
-        void readAndPublishHistory(threadId, threadTitleCached || threadId);
-      }
-      return;
-    }
-    if (
-      method === "item/agentMessage/delta" ||
-      method === "item/commandExecution/outputDelta"
-    ) {
-      const delta = typeof params.delta === "string" ? params.delta : "";
-      if (delta) {
-        const { text, truncated } = truncateForDisplay(delta, 200);
-        await publishDown({
-          type: "log",
-          agent: "codex",
-          text,
-          truncated,
-          chatId: threadId || undefined,
-        });
-        await setStatus("running", text);
-      }
+      cli = pendingApprovals.size ? "waiting" : "idle";
+      await setStatus(cli === "waiting" ? "waiting_approval" : "idle", "Turn completed");
+      if (threadId) await loadLastFromThread(threadId);
+      await refreshQuota();
+      await publishChatView(true);
       return;
     }
     if (method === "item/completed") {
@@ -556,18 +627,11 @@ export async function startCodexAdapter(
         const text = extractText(item);
         if (text && (typ === "userMessage" || typ === "agentMessage")) {
           const prefix = typ === "userMessage" ? "> " : "";
-          await publishDown({
-            type: "log",
-            agent: "codex",
-            text: truncateForDisplay(prefix + text, 200).text,
-            chatId: threadId || undefined,
-          });
+          lastMessage = truncateForDisplay(prefix + text, 280).text;
+          if (cli !== "running") await publishChatView();
         }
       }
       return;
-    }
-    if (method.startsWith("item/") && method.endsWith("/started")) {
-      await setStatus("running", method);
     }
   };
 
@@ -584,21 +648,20 @@ export async function startCodexAdapter(
   });
   notify("initialized", {});
 
-  // Attach to existing Codex chats — do NOT invent a blank thread/start.
+  // Attach to existing Codex chats — snapshots only, no stream, no poll.
+  await refreshQuota();
   await runSyncChats({ follow: true });
 
-  syncTimer = setInterval(() => {
-    void runSyncChats({ follow: true });
-  }, 12_000);
-
   return {
-    async handleApprove(id) {
+    async handleApprove(id, always) {
       const pending = pendingApprovals.get(id);
       if (!pending) return false;
       pendingApprovals.delete(id);
-      respond(pending.rpcId, { decision: "accept", accept: true, approved: true });
-      await setStatus("running", "Approved");
-      await publishDown({ type: "ack", of: "approve", ok: true });
+      const decision = always ? "acceptForSession" : "accept";
+      respond(pending.rpcId, { decision, accept: true, approved: true });
+      cli = "running";
+      await setStatus("running", always ? "Always allowed" : "Approved");
+      await publishChatView(true);
       return true;
     },
     async handleDeny(id) {
@@ -610,8 +673,9 @@ export async function startCodexAdapter(
         accept: false,
         approved: false,
       });
+      cli = "idle";
       await setStatus("idle", "Denied");
-      await publishDown({ type: "ack", of: "deny", ok: true });
+      await publishChatView(true);
       return true;
     },
     async handlePrompt(text) {
@@ -625,32 +689,27 @@ export async function startCodexAdapter(
         threadTitleCached = "new session";
       }
       if (!threadId) throw new Error("No Codex thread");
-      await setStatus("thinking", truncateForDisplay(trimmed, 80).text);
-      await publishDown({
-        type: "log",
-        agent: "codex",
-        text: `> ${truncateForDisplay(trimmed, 110).text}`,
-        chatId: threadId,
-      });
+      lastMessage = `> ${truncateForDisplay(trimmed, 280).text}`;
+      cli = "running";
+      await setStatus("running", truncateForDisplay(trimmed, 80).text);
       await send("turn/start", {
         threadId,
         input: [{ type: "text", text: trimmed }],
       });
+      await publishChatView(true);
     },
     async selectChat(id) {
       const threads = await listThreads();
       const target = threads.find((t) => t.id === id);
       if (!target) return false;
-      await resumeThread(id, threadTitle(target));
-      await publishChatList(threads);
+      await resumeThread(id, threadTitle(target), target.cwd);
       return true;
     },
     async syncChats() {
-      await runSyncChats({ follow: true });
+      await runSyncChats({ follow: false });
     },
     async close() {
       closed = true;
-      if (syncTimer) clearInterval(syncTimer);
       try {
         socket.close();
       } catch {
