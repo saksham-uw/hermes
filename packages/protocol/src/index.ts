@@ -45,7 +45,10 @@ export type DeviceUpMessage =
   | { type: "deny"; id: string }
   | { type: "prompt"; agent: "codex"; text: string }
   | { type: "select_chat"; agent: AgentKind; id: string }
-  | { type: "refresh_chats"; agent?: AgentKind };
+  | { type: "refresh_chats"; agent?: AgentKind }
+  | { type: "voice_begin"; id: string; hz: number; bytes?: number }
+  | { type: "voice_chunk"; id: string; seq: number; d: string }
+  | { type: "voice_end"; id: string; error?: string };
 
 export type DeviceDownMessage =
   | {
@@ -89,7 +92,9 @@ export type DeviceDownMessage =
       detail: string;
     }
   | { type: "ack"; of: string; ok: boolean; error?: string }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  | { type: "transcript"; text: string; append?: boolean }
+  | { type: "transcript_error"; message: string };
 
 export function parseDeviceUp(raw: string): DeviceUpMessage | null {
   try {

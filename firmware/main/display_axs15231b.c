@@ -70,6 +70,16 @@ esp_err_t hermes_power_hold_enable(void) {
   return err;
 }
 
+esp_err_t hermes_codec_power_enable(void) {
+  if (!s_tca) {
+    esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR, 100000, &s_tca);
+    if (err != ESP_OK) return err;
+  }
+  esp_err_t err = tca_set_pin(HERMES_TCA_AUDIO_PIN, true);
+  if (err == ESP_OK) ESP_LOGI(TAG, "TCA9554 audio PA ON (pin %d)", HERMES_TCA_AUDIO_PIN);
+  return err;
+}
+
 esp_err_t hermes_power_hold_release(void) {
   if (!s_tca) {
     esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR, 100000, &s_tca);

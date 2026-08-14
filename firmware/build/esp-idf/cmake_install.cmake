@@ -544,6 +544,11 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
+  include("/Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/espressif__esp_codec_dev/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
   include("/Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/main/cmake_install.cmake")
 endif()
 

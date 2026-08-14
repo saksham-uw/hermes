@@ -31,6 +31,14 @@
 #define HERMES_TCA_AUDIO_PIN 7
 #define HERMES_TOUCH_ADDR 0x3B
 
+/* ES7210 / ES8311 I2S (Waveshare S3_LCD_3_49). */
+#define HERMES_I2S_MCLK   7
+#define HERMES_I2S_BCLK   15
+#define HERMES_I2S_WS     46
+#define HERMES_I2S_DIN    6
+#define HERMES_I2S_DOUT   45
+#define HERMES_ES7210_ADDR 0x40
+
 #define HERMES_BOOT_PIN   0
 #define HERMES_PWR_PIN    16
 #define HERMES_BATT_ADC   4

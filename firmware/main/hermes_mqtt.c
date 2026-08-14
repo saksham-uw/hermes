@@ -126,7 +126,7 @@ esp_err_t hermes_mqtt_start(hermes_down_cb_t on_down) {
       .credentials.authentication.key_len = key_len,
       .session.keepalive = 30,
       .buffer.size = 8192,
-      .buffer.out_size = 2048,
+      .buffer.out_size = 8192,
   };
 
   s_client = esp_mqtt_client_init(&cfg);

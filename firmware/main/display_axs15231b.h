@@ -12,3 +12,4 @@ void hermes_display_flush_native(const uint16_t *rgb565_swapped, uint16_t y, uin
 bool hermes_display_ready(void);
 esp_err_t hermes_power_hold_enable(void);
 esp_err_t hermes_power_hold_release(void);
+esp_err_t hermes_codec_power_enable(void);

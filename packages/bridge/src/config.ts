@@ -9,6 +9,8 @@ export type BridgeConfig = {
   codexCwd: string;
   inboxHost: string;
   inboxPort: number;
+  openaiApiKey: string;
+  sttUrl: string;
 };
 
 function env(name: string, fallback = ""): string {
@@ -36,5 +38,7 @@ export function loadConfig(): BridgeConfig {
     codexCwd: env("HERMES_CODEX_CWD", process.cwd()),
     inboxHost: env("HERMES_INBOX_HOST", "127.0.0.1"),
     inboxPort: Number(env("HERMES_INBOX_PORT", "8741")) || 8741,
+    openaiApiKey: env("OPENAI_API_KEY", ""),
+    sttUrl: env("HERMES_STT_URL", "http://127.0.0.1:8765"),
   };
 }

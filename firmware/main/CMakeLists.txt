@@ -9,6 +9,7 @@ idf_component_register(
     "hermes_gfx.c"
     "hermes_sd.c"
     "hermes_settings.c"
+    "hermes_audio.c"
     "display_axs15231b.c"
     "certs_embed.c"
   INCLUDE_DIRS "."
@@ -27,4 +28,5 @@ idf_component_register(
     esp_adc
     fatfs
     sdmmc
+    esp_codec_dev
 )

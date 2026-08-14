@@ -19,6 +19,7 @@
 #include "wifi_connect.h"
 #include "hermes_sd.h"
 #include "hermes_settings.h"
+#include "hermes_audio.h"
 
 static const char *TAG = "hermes_ui";
 
@@ -41,6 +42,7 @@ typedef enum {
 #define CHAT_CAP 8
 #define PANE_RIGHT 52
 #define PANE_LEFT 148
+#define DRAFT_CAP 1024
 
 typedef struct {
   char id[48];
@@ -77,6 +79,10 @@ static int s_chat_idx = 0;
 static int s_agent_depth = 0; /* 0=list, 1=chat */
 static int s_approve_idx = 0; /* 0=yes 1=always 2=no */
 static int s_msg_scroll = 0;
+static char s_draft[DRAFT_CAP];
+static bool s_stt_busy;
+static bool s_right_hold;
+static int s_bksp_ticks;
 static hermes_theme_t s_theme = THEME_NIGHT;
 static uint8_t s_brightness = 85;
 
@@ -115,6 +121,10 @@ static const char *cli_label(const agent_view_t *a) {
 
 static bool cli_waiting(const agent_view_t *a) {
   return strcmp(cli_label(a), "waiting") == 0;
+}
+
+static bool cli_idle(const agent_view_t *a) {
+  return strcmp(cli_label(a), "idle") == 0;
 }
 
 static adc_oneshot_unit_handle_t s_adc;
@@ -261,6 +271,63 @@ static void draw_cross(int x, int y, uint16_t col) {
   }
 }
 
+static void draw_mic(int x, int y, uint16_t col) {
+  hermes_gfx_fill_rect(&s_gfx, x + 6, y, 8, 12, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 4, y + 2, 12, 8, col);
+  hermes_gfx_rect(&s_gfx, x + 2, y + 4, 16, 12, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 9, y + 16, 2, 4, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 5, y + 19, 10, 2, col);
+}
+
+static void draw_bksp(int x, int y, uint16_t col) {
+  for (int i = 0; i < 8; i++) {
+    hermes_gfx_fill_rect(&s_gfx, x + 8 - i, y + 4 + i, 2, 2, col);
+    hermes_gfx_fill_rect(&s_gfx, x + 8 - i, y + 18 - i, 2, 2, col);
+  }
+  hermes_gfx_fill_rect(&s_gfx, x + 8, y + 8, 12, 8, col);
+  hermes_gfx_fill_rect(&s_gfx, x + 12, y + 10, 2, 4, COL_BG);
+  hermes_gfx_fill_rect(&s_gfx, x + 16, y + 10, 2, 4, COL_BG);
+}
+
+static void json_escape(char *out, size_t n, const char *in) {
+  size_t o = 0;
+  if (!out || n == 0) return;
+  for (; *in && o + 2 < n; in++) {
+    if (*in == '\\' || *in == '"') {
+      if (o + 3 >= n) break;
+      out[o++] = '\\';
+      out[o++] = *in;
+    } else if (*in == '\n') {
+      if (o + 3 >= n) break;
+      out[o++] = '\\';
+      out[o++] = 'n';
+    } else if ((unsigned char)*in >= 32) {
+      out[o++] = *in;
+    }
+  }
+  out[o] = 0;
+}
+
+static void send_draft(void) {
+  if (!s_draft[0] || !hermes_mqtt_is_connected()) return;
+  static char esc[DRAFT_CAP * 2];
+  static char json[DRAFT_CAP * 2 + 64];
+  json_escape(esc, sizeof(esc), s_draft);
+  snprintf(json, sizeof(json), "{\"type\":\"prompt\",\"agent\":\"codex\",\"text\":\"%s\"}", esc);
+  hermes_mqtt_publish_up(json);
+  s_draft[0] = 0;
+  s_stt_busy = false;
+  mark_dirty();
+}
+
+static void draft_del(int n) {
+  int len = (int)strlen(s_draft);
+  if (n > len) n = len;
+  if (n <= 0) return;
+  s_draft[len - n] = 0;
+  mark_dirty();
+}
+
 static void draw_agent(const char *title, agent_view_t *a) {
   hermes_gfx_text(&s_gfx, 12, 4, title, COL_FOCUS, 1);
   hermes_gfx_hline(&s_gfx, 12, 14, GFX_W - 24, COL_LINE);
@@ -287,17 +354,18 @@ static void draw_agent(const char *title, agent_view_t *a) {
     return;
   }
 
-  /* 3-pane snapshot: left meta | middle last message | right approve icons */
+  /* 3-pane: left meta | middle last+draft | right approve or mic */
   const char *cli = cli_label(a);
   bool waiting = cli_waiting(a);
+  bool idle = cli_idle(a) && s_screen == SCR_CODEX;
   int top = 18;
   int left_w = PANE_LEFT;
-  int right_w = waiting ? PANE_RIGHT : 0;
+  int right_w = (waiting || idle) ? PANE_RIGHT : 0;
   int mid_x = left_w + 8;
   int mid_w = GFX_W - mid_x - right_w - 8;
 
   hermes_gfx_vline(&s_gfx, left_w, top, GFX_H - top - 4, COL_LINE);
-  if (waiting) hermes_gfx_vline(&s_gfx, GFX_W - right_w, top, GFX_H - top - 4, COL_LINE);
+  if (right_w) hermes_gfx_vline(&s_gfx, GFX_W - right_w, top, GFX_H - top - 4, COL_LINE);
 
   int y = top + 2;
   hermes_gfx_text(&s_gfx, 8, y, "DIR", COL_DIM, 1);
@@ -318,6 +386,14 @@ static void draw_agent(const char *title, agent_view_t *a) {
 
   int mid_y = top + 2;
   int mid_h = GFX_H - mid_y - 4;
+  bool rec = hermes_audio_recording();
+  bool show_draft = idle && (s_draft[0] || s_stt_busy || rec);
+  int draft_h = 0;
+  if (show_draft) {
+    draft_h = 44;
+    if (draft_h > mid_h / 2) draft_h = mid_h / 2;
+    mid_h -= draft_h;
+  }
   const char *body = a->last[0] ? a->last : "";
   if (waiting && a->approval_title[0]) {
     hermes_gfx_text_wrap_clip(&s_gfx, mid_x, mid_y, mid_w, 16, 0, a->approval_title, COL_WARN, 1);
@@ -336,10 +412,18 @@ static void draw_agent(const char *title, agent_view_t *a) {
     if (s_msg_scroll < 0) s_msg_scroll = 0;
     hermes_gfx_text_wrap_clip(&s_gfx, mid_x, mid_y, mid_w, mid_h, s_msg_scroll, body, COL_TEXT, 1);
     if (max_scroll > 0) {
-      hermes_gfx_text(&s_gfx, mid_x + mid_w - 18, GFX_H - 12, "v^", COL_DIM, 1);
+      hermes_gfx_text(&s_gfx, mid_x + mid_w - 18, mid_y + mid_h - 10, "v^", COL_DIM, 1);
     }
-  } else {
+  } else if (!show_draft) {
     hermes_gfx_text(&s_gfx, mid_x, top + 40, "(no last message)", COL_DIM, 1);
+  }
+
+  if (show_draft) {
+    int dy = top + 2 + (GFX_H - top - 4 - draft_h);
+    hermes_gfx_hline(&s_gfx, mid_x, dy, mid_w, COL_LINE);
+    const char *d = rec ? "(listening)" : (s_stt_busy ? "(transcribing)" : s_draft);
+    uint16_t dcol = rec ? COL_WARN : (s_stt_busy ? COL_DIM : COL_FOCUS);
+    hermes_gfx_text_wrap_clip(&s_gfx, mid_x, dy + 3, mid_w, draft_h - 4, 0, d, dcol, 1);
   }
 
   if (waiting) {
@@ -359,6 +443,13 @@ static void draw_agent(const char *title, agent_view_t *a) {
         draw_cross(rx, iy, sel ? COL_BAD : COL_TEXT);
       }
     }
+  } else if (idle) {
+    int split = top + (GFX_H - top) / 2;
+    int rx = GFX_W - right_w + (right_w - 20) / 2;
+    uint16_t mcol = rec ? COL_WARN : COL_TEXT;
+    if (rec) hermes_gfx_rect(&s_gfx, GFX_W - right_w + 2, top + 2, right_w - 6, split - top - 4, COL_WARN);
+    draw_mic(rx, top + (split - top - 22) / 2, mcol);
+    draw_bksp(rx, split + (GFX_H - split - 22) / 2, COL_TEXT);
   }
 }
 
@@ -600,6 +691,8 @@ static void activate_agent(void) {
       s_agent_depth = 1;
       s_approve_idx = 0;
       s_msg_scroll = 0;
+      s_draft[0] = 0;
+      s_stt_busy = false;
       mark_dirty();
     return;
   }
@@ -630,6 +723,10 @@ static void handle_tap(uint16_t x, uint16_t y) {
 }
 
 static void handle_gesture(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1) {
+  if (s_right_hold) {
+    s_right_hold = false;
+    return;
+  }
   int dx = (int)x1 - (int)x0;
   int dy = (int)y1 - (int)y0;
   int adx = dx < 0 ? -dx : dx;
@@ -754,6 +851,24 @@ void hermes_ui_on_down_json(const char *json, int len) {
       else
         a->approval_title[0] = 0;
       ESP_LOGI(TAG, "chat_view cli=%s", a->state);
+    } else if (strcmp(type->valuestring, "transcript") == 0) {
+      const cJSON *text = cJSON_GetObjectItem(root, "text");
+      s_stt_busy = false;
+      if (cJSON_IsString(text) && text->valuestring[0]) {
+        size_t used = strlen(s_draft);
+        const char *add = text->valuestring;
+        if (used && s_draft[used - 1] != ' ' && s_draft[used - 1] != '\n') {
+          if (used + 1 < sizeof(s_draft) - 1) {
+            s_draft[used++] = ' ';
+            s_draft[used] = 0;
+          }
+        }
+        strncat(s_draft, add, sizeof(s_draft) - 1 - strlen(s_draft));
+      }
+    } else if (strcmp(type->valuestring, "transcript_error") == 0) {
+      s_stt_busy = false;
+      const cJSON *m = cJSON_GetObjectItem(root, "message");
+      if (cJSON_IsString(m)) strncpy(s_status, m->valuestring, sizeof(s_status) - 1);
     } else if (strcmp(type->valuestring, "approval") == 0) {
       const cJSON *id = cJSON_GetObjectItem(root, "id");
       const cJSON *agent = cJSON_GetObjectItem(root, "agent");
@@ -801,6 +916,7 @@ static void ui_task(void *arg) {
   gpio_config(&io);
 
   TickType_t last_status = 0;
+  int mic_hold = 0;
 
   while (1) {
     if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -819,25 +935,56 @@ static void ui_task(void *arg) {
         touch_down = true;
         x0 = x1 = tx;
         y0 = y1 = ty;
+        s_bksp_ticks = 0;
       } else {
         x1 = tx;
         y1 = ty;
       }
+      if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
+      if (s_screen == SCR_CODEX && s_agent_depth == 1 && cli_idle(&s_codex) &&
+          tx >= GFX_W - PANE_RIGHT) {
+        s_right_hold = true;
+        int split = 18 + (GFX_H - 18) / 2;
+        if (ty < split) {
+          s_bksp_ticks = 0;
+          mic_hold++;
+          if (mic_hold == 6 && !hermes_audio_recording() && !s_stt_busy && hermes_audio_ok()) {
+            hermes_audio_start();
+            mark_dirty();
+          }
+        } else {
+          mic_hold = 0;
+          s_bksp_ticks++;
+          int every = 8;
+          if (s_bksp_ticks > 30) every = 3;
+          if (s_bksp_ticks > 60) every = 1;
+          if (s_bksp_ticks % every == 0) draft_del(1);
+        }
+      }
+      if (s_lock) xSemaphoreGive(s_lock);
     } else if (touch_down) {
       touch_down = false;
+      mic_hold = 0;
+      if (hermes_audio_recording()) {
+        hermes_audio_stop_and_upload();
+        s_stt_busy = true;
+        mark_dirty();
+      }
       if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
       handle_gesture(x0, y0, x1, y1);
       if (s_lock) xSemaphoreGive(s_lock);
     }
 
-    /* BOOT: short = back to menu / move; long unused here */
+    /* BOOT: in idle chat with draft = send; else back / menu */
     bool boot_lvl = gpio_get_level(HERMES_BOOT_PIN);
     if (boot.prev && !boot_lvl) boot.down_at = xTaskGetTickCount();
     else if (!boot.prev && boot_lvl) {
       TickType_t held = xTaskGetTickCount() - boot.down_at;
       if (held < pdMS_TO_TICKS(BTN_LONG_MS)) {
         if (s_lock) xSemaphoreTake(s_lock, portMAX_DELAY);
-        if (s_screen == SCR_MENU) menu_move(+1, &s_menu_idx, MENU_N);
+        if (s_screen == SCR_CODEX && s_agent_depth == 1 && cli_idle(&s_codex) && s_draft[0]) {
+          send_draft();
+        } else if (s_screen == SCR_MENU) menu_move(+1, &s_menu_idx, MENU_N);
         else go_menu();
         if (s_lock) xSemaphoreGive(s_lock);
       }
@@ -879,6 +1026,7 @@ esp_err_t hermes_ui_start(void) {
   ESP_ERROR_CHECK(hermes_display_init());
   hermes_display_set_brightness(s_brightness);
   if (hermes_touch_init() != ESP_OK) ESP_LOGW(TAG, "touch failed");
+  if (hermes_audio_init() != ESP_OK) ESP_LOGW(TAG, "audio/mic failed");
   if (!hermes_gfx_init(&s_gfx)) return ESP_ERR_NO_MEM;
   adc_init();
 

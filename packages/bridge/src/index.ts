@@ -3,6 +3,7 @@ import { loadConfig } from "./config.js";
 import { connectIot } from "./iot/client.js";
 import { startCodexAdapter } from "./adapters/codex.js";
 import { startCursorInbox } from "./inbox/server.js";
+import { createVoiceInbox } from "./stt.js";
 
 async function main() {
   const config = loadConfig();
@@ -28,6 +29,11 @@ async function main() {
   }
 
   const cursor = await startCursorInbox(config, publishDown);
+  const voice = createVoiceInbox(
+    { sttUrl: config.sttUrl, openaiApiKey: config.openaiApiKey },
+    publishDown,
+  );
+  console.log(`[hermes] STT local=${config.sttUrl} openai=${config.openaiApiKey ? "yes" : "no"}`);
 
   await publishDown({
     type: "status",
@@ -154,6 +160,19 @@ async function main() {
               error: err instanceof Error ? err.message : String(err),
             });
           }
+          break;
+        case "voice_begin":
+          voice.begin(msg.id, msg.hz);
+          break;
+        case "voice_chunk":
+          voice.chunk(msg.id, msg.seq, msg.d);
+          break;
+        case "voice_end":
+          if (msg.error) {
+            await publishDown({ type: "transcript_error", message: msg.error });
+            break;
+          }
+          voice.end(msg.id);
           break;
         default:
           break;

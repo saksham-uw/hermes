@@ -1,0 +1,35 @@
+[1/23] Linking C static library esp-idf/cmock/libcmock.a
+[2/23] Linking C static library esp-idf/nvs_sec_provider/libnvs_sec_provider.a
+[3/23] Linking C static library esp-idf/esp_driver_cam/libesp_driver_cam.a
+[4/23] Linking C static library esp-idf/app_trace/libapp_trace.a
+[5/23] Linking C static library esp-idf/perfmon/libperfmon.a
+[6/23] Linking C static library esp-idf/esp_hid/libesp_hid.a
+[7/23] Linking C static library esp-idf/esp_local_ctrl/libesp_local_ctrl.a
+[8/23] Linking C static library esp-idf/espcoredump/libespcoredump.a
+[9/23] Linking C static library esp-idf/esp_lcd/libesp_lcd.a
+[10/23] Linking C static library esp-idf/touch_element/libtouch_element.a
+[11/23] Linking C static library esp-idf/spiffs/libspiffs.a
+[12/23] Linking C static library esp-idf/wifi_provisioning/libwifi_provisioning.a
+[13/23] Linking C static library esp-idf/usb/libusb.a
+[14/23] Performing build step for 'bootloader'
+[1/1] cd "/Users/saksham/Weekend Projects/hermes/firmware/build/bootloader/esp-idf/esptool_py" && /Users/saksham/.espressif/tools/python/v5.3.2/venv/bin/python /Users/saksham/.espressif/v5.3.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 bootloader 0x0 /Users/saksham/Weekend\ Projects/hermes/firmware/build/bootloader/bootloader.bin
+Bootloader binary size 0x5490 bytes. 0x2b70 bytes (34%) free.
+[15/23] No install step for 'bootloader'
+[16/23] Completed 'bootloader'
+[17/23] Building C object esp-idf/main/CMakeFiles/__idf_main.dir/hermes_audio.c.obj
+[18/23] Linking C static library esp-idf/main/libmain.a
+[19/23] Generating ld/sections.ld
+[20/23] Building C object CMakeFiles/hermes.elf.dir/project_elf_src_esp32s3.c.obj
+[21/23] Linking CXX executable hermes.elf
+[22/23] Generating binary image from built executable
+esptool.py v4.12.0
+Creating esp32s3 image...
+Merged 3 ELF sections
+Successfully created esp32s3 image.
+Generated /Users/saksham/Weekend Projects/hermes/firmware/build/hermes.bin
+[23/23] cd "/Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/esptool_py" && /Users/saksham/.espressif/tools/python/v5.3.2/venv/bin/python /Users/saksham/.espressif/v5.3.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/saksham/Weekend\ Projects/hermes/firmware/build/partition_table/partition-table.bin /Users/saksham/Weekend\ Projects/hermes/firmware/build/hermes.bin
+FAILED: esp-idf/esptool_py/CMakeFiles/app_check_size /Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/esptool_py/CMakeFiles/app_check_size 
+cd "/Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/esptool_py" && /Users/saksham/.espressif/tools/python/v5.3.2/venv/bin/python /Users/saksham/.espressif/v5.3.2/esp-idf/components/partition_table/check_sizes.py --offset 0x8000 partition --type app /Users/saksham/Weekend\ Projects/hermes/firmware/build/partition_table/partition-table.bin /Users/saksham/Weekend\ Projects/hermes/firmware/build/hermes.bin
+Error: app partition is too small for binary hermes.bin size 0x102af0:
+  - Part 'factory' 0/0 @ 0x10000 size 0x100000 (overflow 0x2af0)
+ninja: build stopped: subcommand failed.

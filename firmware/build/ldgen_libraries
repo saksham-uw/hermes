@@ -82,4 +82,5 @@
 /Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/touch_element/libtouch_element.a
 /Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/usb/libusb.a
 /Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/wifi_provisioning/libwifi_provisioning.a
+/Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/espressif__esp_codec_dev/libespressif__esp_codec_dev.a
 /Users/saksham/Weekend Projects/hermes/firmware/build/esp-idf/main/libmain.a
