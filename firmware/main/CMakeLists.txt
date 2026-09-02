@@ -2,31 +2,33 @@ idf_component_register(
   SRCS
     "main.c"
     "wifi_connect.c"
-    "hermes_mqtt.c"
     "hermes_ui.c"
+    "hermes_actions.c"
+    "hermes_avatar.c"
+    "hermes_avatar_assets.c"
     "hermes_i2c.c"
     "hermes_touch.c"
     "hermes_gfx.c"
-    "hermes_sd.c"
     "hermes_settings.c"
-    "hermes_audio.c"
     "display_axs15231b.c"
-    "certs_embed.c"
   INCLUDE_DIRS "."
-  EMBED_TXTFILES
-    "${CMAKE_CURRENT_LIST_DIR}/../certs/AmazonRootCA1.pem"
-    "${CMAKE_CURRENT_LIST_DIR}/../certs/device.cert.pem"
-    "${CMAKE_CURRENT_LIST_DIR}/../certs/device.private.key"
   REQUIRES
     nvs_flash
     esp_wifi
     esp_event
     esp_netif
-    mqtt
-    json
+    esp_timer
     driver
     esp_adc
-    fatfs
-    sdmmc
-    esp_codec_dev
+    esp_http_client
+    json
+    esp-tls
 )
+
+if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/hermes_actions_config.h")
+  file(WRITE "${CMAKE_CURRENT_LIST_DIR}/hermes_actions_config.h"
+"#pragma once
+#define HERMES_ACTIONS_URL \"\"
+#define HERMES_ACTIONS_DEVICE_TOKEN \"\"
+")
+endif()

@@ -1,0 +1,26 @@
+{
+  "restAfterMs": 30000,
+  "states": {
+    "idle": [
+      "idle",
+      "curious",
+      "happy",
+      "playful"
+    ],
+    "rest": [
+      "drowsy",
+      "sleeping",
+      "bored"
+    ],
+    "busy": [
+      "listening",
+      "working",
+      "excited"
+    ],
+    "thinking": [
+      "thinking",
+      "searching",
+      "confused"
+    ]
+  }
+}

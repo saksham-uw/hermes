@@ -1,13 +1,13 @@
+#include "display_axs15231b.h"
+#include "board_pins.h"
+#include "driver/gpio.h"
+#include "driver/i2c_master.h"
+#include "driver/ledc.h"
+#include "driver/spi_master.h"
+#include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/gpio.h"
-#include "driver/spi_master.h"
-#include "driver/ledc.h"
-#include "driver/i2c_master.h"
-#include "esp_log.h"
-#include "board_pins.h"
 #include "hermes_i2c.h"
-#include "display_axs15231b.h"
 
 static const char *TAG = "axs15231b";
 
@@ -26,20 +26,19 @@ typedef struct {
 } lcd_cmd_t;
 
 static const lcd_cmd_t k_init[] = {
-    {0x11, {0}, 0, 100},
-    {0x36, {0x00}, 1, 0},
-    {0x3A, {0x55}, 1, 0},
-    {0x11, {0}, 0, 100},
-    {0x29, {0}, 0, 100},
+    {0x11, {0}, 0, 100}, {0x36, {0x00}, 1, 0}, {0x3A, {0x55}, 1, 0},
+    {0x11, {0}, 0, 100}, {0x29, {0}, 0, 100},
 };
 
 static esp_err_t tca_read(uint8_t reg, uint8_t *val) {
-  if (!s_tca || !val) return ESP_ERR_INVALID_STATE;
+  if (!s_tca || !val)
+    return ESP_ERR_INVALID_STATE;
   return i2c_master_transmit_receive(s_tca, &reg, 1, val, 1, 100);
 }
 
 static esp_err_t tca_write(uint8_t reg, uint8_t val) {
-  if (!s_tca) return ESP_ERR_INVALID_STATE;
+  if (!s_tca)
+    return ESP_ERR_INVALID_STATE;
   uint8_t buf[2] = {reg, val};
   return i2c_master_transmit(s_tca, buf, 2, 100);
 }
@@ -47,52 +46,70 @@ static esp_err_t tca_write(uint8_t reg, uint8_t val) {
 static esp_err_t tca_set_pin(uint8_t pin, bool high) {
   uint8_t out = 0xFF;
   uint8_t cfg = 0xFF;
-  if (tca_read(0x01, &out) != ESP_OK) out = 0xFF;
-  if (tca_read(0x03, &cfg) != ESP_OK) cfg = 0xFF;
-  if (high) out = (uint8_t)(out | (1u << pin));
-  else out = (uint8_t)(out & ~(1u << pin));
+  if (tca_read(0x01, &out) != ESP_OK)
+    out = 0xFF;
+  if (tca_read(0x03, &cfg) != ESP_OK)
+    cfg = 0xFF;
+  if (high)
+    out = (uint8_t)(out | (1u << pin));
+  else
+    out = (uint8_t)(out & ~(1u << pin));
   cfg = (uint8_t)(cfg & ~(1u << pin));
   esp_err_t err = tca_write(0x01, out);
-  if (err != ESP_OK) return err;
+  if (err != ESP_OK)
+    return err;
   return tca_write(0x03, cfg);
 }
 
-static esp_err_t tca_set_pin_high(uint8_t pin) { return tca_set_pin(pin, true); }
+static esp_err_t tca_set_pin_high(uint8_t pin) {
+  return tca_set_pin(pin, true);
+}
 
 esp_err_t hermes_power_hold_enable(void) {
   if (!s_tca) {
-    esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR, 100000, &s_tca);
-    if (err != ESP_OK) return err;
+    esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR,
+                                       100000, &s_tca);
+    if (err != ESP_OK)
+      return err;
   }
   esp_err_t err = tca_set_pin(HERMES_TCA_SYS_PIN, true);
-  if (err == ESP_OK) ESP_LOGI(TAG, "TCA9554 SYS power-hold ON (pin %d)", HERMES_TCA_SYS_PIN);
-  else ESP_LOGW(TAG, "SYS power-hold failed: %s", esp_err_to_name(err));
+  if (err == ESP_OK)
+    ESP_LOGI(TAG, "TCA9554 SYS power-hold ON (pin %d)", HERMES_TCA_SYS_PIN);
+  else
+    ESP_LOGW(TAG, "SYS power-hold failed: %s", esp_err_to_name(err));
   return err;
 }
 
 esp_err_t hermes_codec_power_enable(void) {
   if (!s_tca) {
-    esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR, 100000, &s_tca);
-    if (err != ESP_OK) return err;
+    esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR,
+                                       100000, &s_tca);
+    if (err != ESP_OK)
+      return err;
   }
   esp_err_t err = tca_set_pin(HERMES_TCA_AUDIO_PIN, true);
-  if (err == ESP_OK) ESP_LOGI(TAG, "TCA9554 audio PA ON (pin %d)", HERMES_TCA_AUDIO_PIN);
+  if (err == ESP_OK)
+    ESP_LOGI(TAG, "TCA9554 audio PA ON (pin %d)", HERMES_TCA_AUDIO_PIN);
   return err;
 }
 
 esp_err_t hermes_power_hold_release(void) {
   if (!s_tca) {
-    esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR, 100000, &s_tca);
-    if (err != ESP_OK) return err;
+    esp_err_t err = hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR,
+                                       100000, &s_tca);
+    if (err != ESP_OK)
+      return err;
   }
   esp_err_t err = tca_set_pin(HERMES_TCA_SYS_PIN, false);
-  if (err == ESP_OK) ESP_LOGI(TAG, "TCA9554 SYS power-hold OFF");
+  if (err == ESP_OK)
+    ESP_LOGI(TAG, "TCA9554 SYS power-hold OFF");
   return err;
 }
 
 static void tca_enable_backlight_gate(void) {
   if (!s_tca) {
-    if (hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR, 100000, &s_tca) != ESP_OK) {
+    if (hermes_i2c_add_dev(hermes_i2c_sys_bus(), HERMES_TCA_ADDR, 100000,
+                           &s_tca) != ESP_OK) {
       ESP_LOGW(TAG, "TCA9554 missing");
       return;
     }
@@ -101,7 +118,8 @@ static void tca_enable_backlight_gate(void) {
     ESP_LOGI(TAG, "TCA9554 backlight enable OK");
 }
 
-static void send_cmd(uint8_t command, const uint8_t *data, uint32_t length) {
+static esp_err_t send_cmd(uint8_t command, const uint8_t *data,
+                          uint32_t length) {
   spi_transaction_t t = {0};
   t.flags = SPI_TRANS_MULTILINE_CMD | SPI_TRANS_MULTILINE_ADDR;
   t.cmd = 0x02;
@@ -110,12 +128,13 @@ static void send_cmd(uint8_t command, const uint8_t *data, uint32_t length) {
     t.tx_buffer = data;
     t.length = length * 8;
   }
-  ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, &t));
+  return spi_device_polling_transmit(s_spi, &t);
 }
 
-static void set_col_window(uint16_t x1, uint16_t x2) {
-  uint8_t data[] = {(uint8_t)(x1 >> 8), (uint8_t)x1, (uint8_t)(x2 >> 8), (uint8_t)x2};
-  send_cmd(0x2A, data, sizeof(data));
+static esp_err_t set_col_window(uint16_t x1, uint16_t x2) {
+  uint8_t data[] = {(uint8_t)(x1 >> 8), (uint8_t)x1, (uint8_t)(x2 >> 8),
+                    (uint8_t)x2};
+  return send_cmd(0x2A, data, sizeof(data));
 }
 
 static void bl_pwm_init(int pin_a, int pin_b) {
@@ -154,8 +173,10 @@ static void bl_pwm_init(int pin_a, int pin_b) {
 }
 
 void hermes_display_set_brightness(uint8_t percent) {
-  if (percent < 5) percent = 5;
-  if (percent > 100) percent = 100;
+  if (percent < 5)
+    percent = 5;
+  if (percent > 100)
+    percent = 100;
   s_brightness = percent;
   /* Waveshare AP3032: active-low PWM — lower duty = brighter.
    * Use almost the full 0..255 range so +/-10% is obvious. */
@@ -169,7 +190,8 @@ void hermes_display_set_brightness(uint8_t percent) {
     ledc_set_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1, duty);
     ledc_update_duty(LEDC_LOW_SPEED_MODE, LEDC_CHANNEL_1);
   }
-  ESP_LOGI(TAG, "brightness %u%% duty=%lu (active-low)", (unsigned)percent, (unsigned long)duty);
+  ESP_LOGI(TAG, "brightness %u%% duty=%lu (active-low)", (unsigned)percent,
+           (unsigned long)duty);
 }
 
 void hermes_display_set_backlight(bool on) {
@@ -214,7 +236,9 @@ esp_err_t hermes_display_init(void) {
       .max_transfer_sz = 16 * 1024 + 8,
       .flags = SPICOMMON_BUSFLAG_MASTER | SPICOMMON_BUSFLAG_GPIO_PINS,
   };
-  ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO));
+  esp_err_t err = spi_bus_initialize(SPI3_HOST, &bus, SPI_DMA_CH_AUTO);
+  if (err != ESP_OK)
+    return err;
 
   spi_device_interface_config_t dev = {
       .command_bits = 8,
@@ -225,11 +249,16 @@ esp_err_t hermes_display_init(void) {
       .flags = SPI_DEVICE_HALFDUPLEX,
       .queue_size = 10,
   };
-  ESP_ERROR_CHECK(spi_bus_add_device(SPI3_HOST, &dev, &s_spi));
+  err = spi_bus_add_device(SPI3_HOST, &dev, &s_spi);
+  if (err != ESP_OK)
+    return err;
 
   for (size_t i = 0; i < sizeof(k_init) / sizeof(k_init[0]); i++) {
-    send_cmd(k_init[i].cmd, k_init[i].data, k_init[i].len);
-    if (k_init[i].delay_ms) vTaskDelay(pdMS_TO_TICKS(k_init[i].delay_ms));
+    err = send_cmd(k_init[i].cmd, k_init[i].data, k_init[i].len);
+    if (err != ESP_OK)
+      return err;
+    if (k_init[i].delay_ms)
+      vTaskDelay(pdMS_TO_TICKS(k_init[i].delay_ms));
   }
 
   tca_enable_backlight_gate();
@@ -239,22 +268,28 @@ esp_err_t hermes_display_init(void) {
   hermes_display_set_backlight(true);
 
   s_ready = true;
-  ESP_LOGI(TAG, "panel ready native %dx%d (UI %dx%d landscape)", HERMES_PANEL_W, HERMES_PANEL_H,
-           HERMES_UI_W, HERMES_UI_H);
+  ESP_LOGI(TAG, "panel ready native %dx%d (UI %dx%d landscape)", HERMES_PANEL_W,
+           HERMES_PANEL_H, HERMES_UI_W, HERMES_UI_H);
   return ESP_OK;
 }
 
 bool hermes_display_ready(void) { return s_ready; }
 
-void hermes_display_flush_native(const uint16_t *rgb565_swapped, uint16_t y, uint16_t h) {
-  if (!s_ready || !rgb565_swapped || !h) return;
+void hermes_display_flush_native(const uint16_t *rgb565_swapped, uint16_t y,
+                                 uint16_t h) {
+  if (!s_ready || !rgb565_swapped || !h)
+    return;
 
   bool first = true;
   size_t left = (size_t)HERMES_PANEL_W * h;
   const uint16_t *cursor = rgb565_swapped;
   const size_t max_chunk = (16 * 1024) / sizeof(uint16_t);
 
-  set_col_window(0, HERMES_PANEL_W - 1);
+  esp_err_t err = set_col_window(0, HERMES_PANEL_W - 1);
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "panel window command failed: %s", esp_err_to_name(err));
+    return;
+  }
 
   while (left) {
     size_t chunk = left > max_chunk ? max_chunk : left;
@@ -273,7 +308,12 @@ void hermes_display_flush_native(const uint16_t *rgb565_swapped, uint16_t y, uin
     }
     t.base.tx_buffer = cursor;
     t.base.length = chunk * 16;
-    ESP_ERROR_CHECK(spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t));
+    err = spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
+    if (err != ESP_OK) {
+      ESP_LOGE(TAG, "panel flush failed at row %u: %s", (unsigned)y,
+               esp_err_to_name(err));
+      return;
+    }
     left -= chunk;
     cursor += chunk;
   }

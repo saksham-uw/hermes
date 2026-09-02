@@ -1,90 +1,102 @@
 # Hermes
 
-Pocket remote for **Codex** (approve / deny / prompt) and **Cursor IDE observe**, over **AWS IoT Core**.
+Hermes is a standalone pocket Git operations console for the Waveshare
+**ESP32-S3-Touch-LCD-3.49**. Its first application workflow creates and merges
+known pull-request routes for `UltraWording/ultracontract` without placing a
+GitHub or Slack credential on the device.
 
-Designed for a private EC2 box with **no public SSH**: both the EC2 bridge and the Waveshare ESP32-S3-Touch-LCD-3.49 dial **out** to IoT Core.
+## Current experience
 
-## Architecture
+- Exact quadrant-block Hermes boot mark with a three-second loading sequence.
+- Five-item menu: Git, status, settings, Wi-Fi, and switch off.
+- A dormant Git navigation shell for the planned `main <- branch`,
+  `prod <- main`, and merge workflows. It performs no network actions yet.
+- `BOOT` moves the highlight down one row. A tap anywhere activates that
+  highlighted row; touch coordinates never pick a different item. Short `PWR`
+  goes back one level, and held `PWR` runs the 1.5-second shutdown sequence.
+- Cyberpunk live telemetry for battery, Wi-Fi signal, uptime, heap, PSRAM, and CPU.
+- Seven display themes and persistent brightness stored in ESP32 NVS flash—no SD
+  card is mounted or required.
+- Three baked Wi-Fi routes with scanning, active-route marking, verified switching,
+  and automatic rollback when a new route has no internet.
+- Avatar Lab's actual Kirby definition, 28 expressions, and 23 animation presets,
+  compiled with the official `@bible-strong/avatar-core` SDK. The antialiased body
+  and eye channels are recolored live by all seven Hermes themes; SDK-rendered
+  transitions, preset blink timing, drowsiness, sleep, and wake behavior run on
+  the device.
+- A four-state behavior system chooses among curated Avatar Lab routines:
+  `idle` during normal interaction, `rest` after 30 seconds without input,
+  `thinking` while Hermes navigates or searches, and explicit `busy` routines
+  during Git feature work.
 
-```
-ESP32  --mTLS MQTT-->  AWS IoT Core  <--SigV4 MQTT--  hermes-bridge on EC2
-                                                      |-- Codex app-server (loopback)
-                                                      |-- Cursor hooks inbox :8741
-```
+## Planned Git action service
 
-Topics:
-
-- `hermes/saksham/device/up` — device → bridge
-- `hermes/saksham/device/down` — bridge → device
-
-## Quick start
-
-### 1. Install JS packages
+The separate `@hermes/actions-service` package is prepared for the later
+integration phase but is not compiled into or contacted by the current firmware.
+It validates that its GitHub token belongs to
+`saksham-uw`, creates only the two supported PR directions, requests
+`Ultrassure` and `CAI-yw`, announces newly created PRs from saksham's Slack
+user account, and records idempotency progress so device retries resume partial
+operations safely. GitHub titles, bodies, merge commits, and Slack text never
+mention Hermes.
 
 ```bash
-cd "/Users/saksham/Weekend Projects/hermes"
 npm install
-npm run build
+npm run actions:test
+npm run actions:build
+npm run actions:start
 ```
 
-### 2. Provision AWS IoT Core
+See [packages/actions-service/README.md](packages/actions-service/README.md) for
+the required GitHub/Slack configuration and [task.md](task.md) for the complete
+product contract. Deploy the action service to AWS Lambda with
+`npm run actions:deploy`. That writes a local firmware header with the Function
+URL and device token; it is gitignored and must not be committed.
+
+## Build and flash
 
 ```bash
-chmod +x deploy/iot/provision.sh scripts/codex-lunch.sh packages/cursor-hooks/scripts/notify.sh
-npm run provision:iot
-# Optional: attach bridge IAM policy to your EC2 instance role
-HERMES_EC2_INSTANCE_PROFILE_ROLE=YourEc2Role npm run provision:iot
+cd firmware
+idf.py set-target esp32s3
+idf.py build
+idf.py -p /dev/cu.usbmodem* flash monitor
 ```
 
-This creates Thing `hermes-device`, device certs under `firmware/certs/`, IoT policy, IAM policy `HermesBridgeIoT`, and writes `.env`.
+See [firmware/README.md](firmware/README.md) for hardware and firmware details.
 
-### 3. Run bridge (laptop smoke test or EC2)
+## Avatar pipeline
+
+The checked-in `.avatar.json` is the runtime definition exported from Avatar Lab,
+not a hand-drawn approximation. To resync it from an Avatar Lab checkout and
+regenerate the compressed ESP32 frames:
 
 ```bash
-cp .env.example .env   # if needed; provision already writes .env
-# Set HERMES_CODEX_SPAWN=false if Codex is not installed locally
-export HERMES_CODEX_SPAWN=false
-npm run start:bridge
+npm install
+npm run avatar:sync -- /path/to/bible-strong-avatar-lab/src/features/studio/defaultStudioDocument.json
+npm run avatar:generate
 ```
 
-On EC2 (lunch mode):
+`avatar:generate` validates and renders through `@bible-strong/avatar-core`,
+supersamples each SVG frame at 8×, and emits theme-recolorable eight-bit coverage
+channels plus direct SDK morphs for every state-routine handoff. See
+[`assets/avatar/README.md`](assets/avatar/README.md) for provenance and licensing.
 
-```bash
-./scripts/codex-lunch.sh
-# lock laptop — control from the ESP32
-```
+## Dormant legacy stack
 
-Systemd (optional):
+The former Codex/Cursor remote remains in the repository for reference, but it is
+not compiled into or contacted by the active firmware:
 
-```bash
-sudo cp -R . /opt/hermes
-sudo cp deploy/systemd/hermes-bridge.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now hermes-bridge
-```
-
-### 4. Cursor observe hooks
-
-See [packages/cursor-hooks/README.md](packages/cursor-hooks/README.md). Copy hooks into the project you open via Cursor Remote-SSH.
-
-### 5. Flash the ESP32
-
-See [firmware/README.md](firmware/README.md). After `provision:iot`, set Wi-Fi in `idf.py menuconfig`, then `idf.py flash monitor`.
-
-## Packages
-
-| Path | Role |
+| Path | Former role |
 | --- | --- |
-| `packages/protocol` | Shared MQTT JSON types |
-| `packages/bridge` | EC2 service: IoT + Codex + Cursor inbox |
-| `packages/cursor-hooks` | Observe-only IDE hooks |
-| `firmware` | ESP-IDF app for Waveshare 3.49 |
-| `deploy/iot` | AWS IoT / IAM provisioning |
-| `scripts/codex-lunch.sh` | tmux lunch session helper |
+| `packages/bridge` | AWS IoT to Codex/Cursor bridge |
+| `packages/protocol` | Legacy MQTT message types |
+| `packages/cursor-hooks` | Cursor observation hooks |
+| `deploy/iot` | AWS IoT provisioning |
+| `scripts/codex-lunch.sh` | Codex/tmux helper |
+| `scripts/hermes-stt.py` | Voice transcription service |
+| `firmware/main/hermes_mqtt.*` | Device-side AWS MQTT client |
+| `firmware/main/hermes_audio.*` | Former prompt recording/upload path |
+| `firmware/main/hermes_sd.*` | Former SD-backed storage |
 
-## Security notes
-
-- Codex app-server listens on `127.0.0.1` only with a capability token in `~/.hermes/`.
-- Device IoT policy is limited to `hermes/<user>/device/{up,down}`.
-- Bridge uses IAM (`hermes-bridge-*` client ids).
-- Cursor hooks never gate approvals (observe only).
+Legacy Node commands are deliberately namespaced under `npm run legacy:*`; none are
+part of the normal device workflow.

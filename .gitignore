@@ -14,3 +14,5 @@ firmware/certs/device.public.key
 firmware/managed_components/
 firmware/dependencies.lock
 firmware/build/
+firmware/main/hermes_actions_config.h
+.hermes-actions-idempotency.json

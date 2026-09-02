@@ -13,7 +13,7 @@ typedef struct {
 
 typedef struct {
   bool visible;
-  int8_t rssi;     /* 0 if unknown/not visible */
+  int8_t rssi; /* 0 if unknown/not visible */
   uint8_t channel;
 } hermes_wifi_sight_t;
 
@@ -30,5 +30,5 @@ int hermes_wifi_count(void);
 
 /** Scan APs and fill sight info for baked networks. */
 esp_err_t hermes_wifi_refresh_scan(void);
-const hermes_wifi_sight_t *hermes_wifi_sight(int index);
+bool hermes_wifi_sight(int index, hermes_wifi_sight_t *out);
 bool hermes_wifi_is_selectable(int index);

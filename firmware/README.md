@@ -1,51 +1,68 @@
-# Hermes Firmware — ESP32-S3-Touch-LCD-3.49
+# Hermes firmware
 
-AWS IoT Core MQTT client + LVGL UI for Waveshare **ESP32-S3-Touch-LCD-3.49** (172×640, AXS15231B).
+Standalone ESP-IDF firmware for the Waveshare **ESP32-S3-Touch-LCD-3.49**
+(172×640 AXS15231B panel, presented as a 640×172 landscape interface).
 
 ## Prerequisites
 
-1. [ESP-IDF 5.3+](https://docs.espressif.com/projects/esp-idf/en/latest/esp32s3/get-started/)
-2. Device certs from `npm run provision:iot` (written to `firmware/certs/`)
-3. Waveshare board BSP / LCD example components (QSPI AXS15231B + touch). Copy or set `EXTRA_COMPONENT_DIRS` to Waveshare’s SDK when available.
+1. ESP-IDF 5.3 or newer.
+2. A supported ESP32-S3-Touch-LCD-3.49 board with PSRAM.
+3. One of the three Wi-Fi networks configured in `main/wifi_connect.c`, if network
+   telemetry, route switching, or Git workflows are needed.
 
-## Configure
+AWS credentials, IoT certificates, an SD card, the EC2 bridge, Codex, Cursor, and
+the audio codecs are not required by this firmware.
+
+## Build and flash
 
 ```bash
-cd firmware
 idf.py set-target esp32s3
-idf.py menuconfig   # Hermes Configuration: Wi-Fi SSID/password, IoT endpoint
-```
-
-Or edit `sdkconfig.defaults` / set:
-
-- `CONFIG_HERMES_WIFI_SSID`
-- `CONFIG_HERMES_WIFI_PASSWORD`
-- `CONFIG_HERMES_IOT_ENDPOINT` (default `acp99wijypwjp-ats.iot.us-east-1.amazonaws.com`)
-- `CONFIG_HERMES_USER_ID` (`saksham`)
-- `CONFIG_HERMES_THING_NAME` (`hermes-device`)
-
-Embed certs: place PEMs in `certs/` (gitignored except `.gitkeep`):
-
-- `device.cert.pem`
-- `device.private.key`
-- `AmazonRootCA1.pem`
-
-## Build & flash
-
-```bash
 idf.py build
 idf.py -p /dev/cu.usbmodem* flash monitor
 ```
 
-## UI
+## Controls
 
-- **Status** — agent state + summary
-- **Approval** — Approve / Deny (long-press Approve for shell)
-- **Prompt** — preset buttons + short text entry
+| Input | Behavior |
+| --- | --- |
+| `BOOT` press | Move the highlight to the next item, wrapping at the end. Never activates. |
+| Screen tap | Activate the currently highlighted item. Touch coordinates must not select a different row. |
+| Short `PWR` | Go back one navigation level |
+| Hold `PWR` | Play the 1.5-second shutdown sequence and power down |
+| `RESET` | Hardware reset; it is not an application input |
 
-BOOT button cycles screens when touch/LCD BSP is not linked (`CONFIG_HERMES_UI_CONSOLE=y` fallback).
+Touch swipes do not navigate. This intentionally keeps traversal one-directional.
+BOOT and PWR edges are captured by GPIO interrupts, so short presses are retained
+even while the display is flushing an animation frame.
 
-## Topics
+## Persistence and networking
 
-- Publish: `hermes/<user>/device/up`
-- Subscribe: `hermes/<user>/device/down`
+Theme, brightness, and the selected Wi-Fi route are stored in the ESP32 NVS
+partition. Display settings no longer touch the TF/SD interface. Wi-Fi scanning and
+connection attempts run in background FreeRTOS tasks so a loading indicator can
+continue animating.
+
+GitHub and Slack credentials are held by the AWS Lambda action service. The
+firmware stores only the Function URL and a device token, generated locally by
+`npm run actions:deploy`.
+
+The three requested credentials are compiled into `main/wifi_connect.c`. Treat a
+firmware image as sensitive because those credentials can be extracted from it.
+
+## Active modules
+
+- `hermes_ui` — screens, controls, loading and power state machine.
+- `hermes_avatar` — the on-device Avatar Core timeline, blink/lifecycle policy,
+  compressed-frame decoder, and theme-aware RGB565 compositor.
+- `hermes_avatar_assets` — generated Avatar Lab geometry, SDK transition frames,
+  expressions, and semantic animation metadata. Regenerate it from the repository
+  root with `npm run avatar:generate`.
+- `hermes_gfx` / `display_axs15231b` — framebuffer rendering and panel transport.
+- `hermes_settings` — NVS-backed theme and brightness.
+- `wifi_connect` — baked route discovery, selection and rollback.
+
+The old MQTT, audio and SD modules are retained as dormant source files but omitted
+from `main/CMakeLists.txt`.
+
+The custom partition table gives the factory application 12 MiB so the high-quality
+Avatar Lab frame set fits without reducing its antialiasing or transition cadence.
