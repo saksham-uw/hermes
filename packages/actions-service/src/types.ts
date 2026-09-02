@@ -47,6 +47,25 @@ export type MergeResult = {
   message: string;
 };
 
+export type DeploymentState =
+  | "unknown"
+  | "queued"
+  | "running"
+  | "ready"
+  | "failed"
+  | "cancelled";
+
+export type DeploymentStatus = {
+  repo: RepoId;
+  state: DeploymentState;
+  runNumber: number;
+  candidateTag: string;
+  latestTag: string;
+  latestRunNumber: number;
+  startedAtEpoch: number;
+  completedAtEpoch: number;
+};
+
 export type ServiceErrorBody = {
   error: {
     code: string;

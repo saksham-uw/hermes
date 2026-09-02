@@ -11,6 +11,7 @@
 #define HERMES_GIT_TITLE_LEN 48
 #define HERMES_GIT_SHA_LEN 44
 #define HERMES_GIT_MSG_LEN 72
+#define HERMES_GIT_TAG_LEN 20
 
 typedef struct {
   char name[HERMES_GIT_NAME_LEN];
@@ -36,8 +37,20 @@ typedef struct {
 
 typedef struct {
   bool merged;
+  char sha[HERMES_GIT_SHA_LEN];
   char message[HERMES_GIT_MSG_LEN];
 } hermes_git_merge_t;
+
+typedef struct {
+  bool valid;
+  char state[16];
+  char candidate_tag[HERMES_GIT_TAG_LEN];
+  char latest_tag[HERMES_GIT_TAG_LEN];
+  int run_number;
+  int latest_run_number;
+  int64_t started_at;
+  int64_t completed_at;
+} hermes_git_deployment_t;
 
 bool hermes_actions_configured(void);
 void hermes_actions_make_key(char *out, size_t out_len);
@@ -52,6 +65,9 @@ esp_err_t hermes_actions_create_prod(const char *repo,
                                       const char *idempotency_key,
                                       hermes_git_creation_t *out, char *err,
                                       size_t err_len);
+esp_err_t hermes_actions_list_deployments(hermes_git_deployment_t *out,
+                                          int *count, char *err,
+                                          size_t err_len);
 esp_err_t hermes_actions_create_from_branch(const char *repo, const char *branch,
                                            const char *idempotency_key,
                                            hermes_git_creation_t *out,

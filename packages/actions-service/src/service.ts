@@ -3,6 +3,7 @@ import { IdempotencyStore } from "./idempotency.js";
 import type { SlackClient } from "./slack.js";
 import type {
   BranchSummary,
+  DeploymentStatus,
   MergeResult,
   PullCreation,
   PullSummary,
@@ -20,6 +21,7 @@ type GitHubOperations = Pick<
   | "listHermesPulls"
   | "getHermesPull"
   | "mergePull"
+  | "getDeployment"
 >;
 
 type SlackOperations = Pick<SlackClient, "announcePull">;
@@ -63,6 +65,17 @@ export class GitWorkflowService {
 
   listPulls(repo: RepoId): Promise<PullSummary[]> {
     return this.github.listHermesPulls(repo).then((pulls) => pulls.slice(0, 8));
+  }
+
+  getDeployment(repo: RepoId): Promise<DeploymentStatus> {
+    return this.github.getDeployment(repo);
+  }
+
+  listDeployments(): Promise<DeploymentStatus[]> {
+    return Promise.all([
+      this.github.getDeployment("ultracontract"),
+      this.github.getDeployment("ultrachatbot"),
+    ]);
   }
 
   getPull(repo: RepoId, number: number): Promise<PullSummary> {

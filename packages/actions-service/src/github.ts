@@ -1,5 +1,7 @@
 import type {
   BranchSummary,
+  DeploymentState,
+  DeploymentStatus,
   MergeResult,
   PullSummary,
   RepoId,
@@ -28,6 +30,15 @@ type RawReview = {
   user: RawUser | null;
   state: string;
   submitted_at: string | null;
+};
+type RawWorkflowRun = {
+  run_number: number;
+  status: "queued" | "in_progress" | "completed" | string;
+  conclusion: string | null;
+  head_sha: string;
+  run_started_at: string | null;
+  created_at: string;
+  updated_at: string;
 };
 export type RawPull = {
   number: number;
@@ -93,6 +104,10 @@ function effectiveReviews(reviews: RawReview[]): ReviewSummary[] {
 
 export class GitHubClient {
   private actorVerification?: Promise<void>;
+  private readonly deploymentCache = new Map<RepoId, {
+    expiresAt: number;
+    value: DeploymentStatus;
+  }>();
 
   constructor(
     private readonly token: string,
@@ -144,6 +159,44 @@ export class GitHubClient {
 
   private api(repo: RepoId, suffix = ""): string {
     return `/repos/${OWNER}/${repo}${suffix}`;
+  }
+
+  async getDeployment(repo: RepoId): Promise<DeploymentStatus> {
+    const cached = this.deploymentCache.get(repo);
+    if (cached && cached.expiresAt > Date.now()) return cached.value;
+    const workflow = repo === "ultracontract" ? "deploy.yml" : "push-ecr-prod.yml";
+    const response = await this.request<{ workflow_runs: RawWorkflowRun[] }>(
+      this.api(
+        repo,
+        `/actions/workflows/${workflow}/runs?branch=prod&event=push&per_page=20`,
+      ),
+    );
+    const latest = response.workflow_runs[0];
+    const latestSuccessful = response.workflow_runs.find(
+      (run) => run.status === "completed" && run.conclusion === "success",
+    );
+    let state: DeploymentState = "unknown";
+    if (latest?.status === "queued") state = "queued";
+    else if (latest?.status === "in_progress") state = "running";
+    else if (latest?.status === "completed" && latest.conclusion === "success") state = "ready";
+    else if (latest?.status === "completed" && latest.conclusion === "cancelled") state = "cancelled";
+    else if (latest?.status === "completed") state = "failed";
+    const value: DeploymentStatus = {
+      repo,
+      state,
+      runNumber: latest?.run_number ?? 0,
+      candidateTag: latest?.head_sha.slice(0, 8) ?? "",
+      latestTag: latestSuccessful?.head_sha.slice(0, 8) ?? "",
+      latestRunNumber: latestSuccessful?.run_number ?? 0,
+      startedAtEpoch: latest
+        ? Math.floor(Date.parse(latest.run_started_at ?? latest.created_at) / 1000)
+        : 0,
+      completedAtEpoch: latestSuccessful
+        ? Math.floor(Date.parse(latestSuccessful.updated_at) / 1000)
+        : 0,
+    };
+    this.deploymentCache.set(repo, { expiresAt: Date.now() + 10_000, value });
+    return value;
   }
 
   async listRecentBranches(

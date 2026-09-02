@@ -3,7 +3,7 @@ import test from "node:test";
 import type { RawPull } from "./github.js";
 import { IdempotencyConflictError, IdempotencyStore } from "./idempotency.js";
 import { GitWorkflowService, InputError } from "./service.js";
-import type { MergeResult, PullSummary, WorkflowId } from "./types.js";
+import type { DeploymentStatus, MergeResult, PullSummary, WorkflowId } from "./types.js";
 
 function pullSummary(overrides: Partial<PullSummary> = {}): PullSummary {
   return {
@@ -54,6 +54,18 @@ class FakeGitHub {
   async mergePull(): Promise<MergeResult> {
     this.mergeCalls++;
     return { merged: true, sha: "deadbeef", message: "Pull Request successfully merged" };
+  }
+  async getDeployment(repo: "ultracontract" | "ultrachatbot"): Promise<DeploymentStatus> {
+    return {
+      repo,
+      state: "ready",
+      runNumber: 10,
+      candidateTag: "deadbeef",
+      latestTag: "deadbeef",
+      latestRunNumber: 10,
+      startedAtEpoch: 1788343200,
+      completedAtEpoch: 1788343260,
+    };
   }
 }
 
@@ -154,4 +166,18 @@ test("createPull forwards the selected repository", async () => {
   const service = new GitWorkflowService(github, new FakeSlack(), new IdempotencyStore(null));
   await service.createPull("ultrachatbot", "prod-from-main", undefined, "create-prod-bot");
   assert.equal(github.lastRepo, "ultrachatbot");
+});
+
+test("lists production deployment status for both repositories", async () => {
+  const service = new GitWorkflowService(
+    new FakeGitHub(),
+    new FakeSlack(),
+    new IdempotencyStore(null),
+  );
+  const deployments = await service.listDeployments();
+  assert.deepEqual(deployments.map((deployment) => deployment.repo), [
+    "ultracontract",
+    "ultrachatbot",
+  ]);
+  assert.equal(deployments[0].latestTag, "deadbeef");
 });

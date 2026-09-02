@@ -5,12 +5,12 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "hermes_actions_config.h"
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
 static const char *TAG = "hermes_act";
 #define RESPONSE_CAP 8192
-static char s_http_body[RESPONSE_CAP];
 
 static void copy_text(char *dest, size_t dest_len, const char *src);
 static esp_err_t map_error_body(const char *body, int status, char *err,
@@ -65,18 +65,23 @@ static int json_int(cJSON *object, const char *key) {
 static esp_err_t map_error_body(const char *body, int status, char *err,
                                size_t err_len) {
   cJSON *root = cJSON_Parse(body);
-  const char *code = "";
-  const char *message = "";
+  char code[32] = {0};
+  char message[181] = {0};
   if (root) {
     cJSON *error = cJSON_GetObjectItemCaseSensitive(root, "error");
     if (cJSON_IsObject(error)) {
-      code = json_string(error, "code");
-      message = json_string(error, "message");
+      copy_text(code, sizeof(code), json_string(error, "code"));
+      copy_text(message, sizeof(message), json_string(error, "message"));
     }
     cJSON_Delete(root);
   }
   if (strcmp(code, "device_auth") == 0) {
     copy_text(err, err_len, "device auth failed");
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (strcmp(code, "github_auth") == 0 &&
+      strstr(message, "accessible by personal access token")) {
+    copy_text(err, err_len, "actions access pending");
     return ESP_ERR_INVALID_STATE;
   }
   if (status <= 0)
@@ -158,6 +163,29 @@ static esp_err_t perform(const char *path, const char *method,
   return ESP_OK;
 }
 
+static esp_err_t perform_json(const char *path, const char *method,
+                              const char *idempotency_key,
+                              const char *json_body, cJSON **root_out,
+                              char *err, size_t err_len) {
+  char *response = calloc(1, RESPONSE_CAP);
+  if (!response) {
+    copy_text(err, err_len, "out of memory");
+    return ESP_ERR_NO_MEM;
+  }
+  int status = 0;
+  esp_err_t result = perform(path, method, idempotency_key, json_body, response,
+                             RESPONSE_CAP, &status, err, err_len);
+  if (result == ESP_OK) {
+    *root_out = cJSON_Parse(response);
+    if (!*root_out) {
+      copy_text(err, err_len, "invalid service response");
+      result = ESP_ERR_INVALID_RESPONSE;
+    }
+  }
+  free(response);
+  return result;
+}
+
 static void fill_pull(cJSON *object, hermes_git_pull_t *out) {
   memset(out, 0, sizeof(*out));
   out->number = json_int(object, "number");
@@ -197,15 +225,33 @@ static void fill_creation(cJSON *root, hermes_git_creation_t *out) {
   }
 }
 
+static int64_t json_epoch(cJSON *object, const char *key) {
+  cJSON *item = cJSON_GetObjectItemCaseSensitive(object, key);
+  return cJSON_IsNumber(item) ? (int64_t)item->valuedouble : 0;
+}
+
+static void fill_deployment(cJSON *object, hermes_git_deployment_t *out) {
+  memset(out, 0, sizeof(*out));
+  if (!cJSON_IsObject(object))
+    return;
+  out->valid = true;
+  copy_text(out->state, sizeof(out->state), json_string(object, "state"));
+  copy_text(out->candidate_tag, sizeof(out->candidate_tag),
+            json_string(object, "candidateTag"));
+  copy_text(out->latest_tag, sizeof(out->latest_tag),
+            json_string(object, "latestTag"));
+  out->run_number = json_int(object, "runNumber");
+  out->latest_run_number = json_int(object, "latestRunNumber");
+  out->started_at = json_epoch(object, "startedAtEpoch");
+  out->completed_at = json_epoch(object, "completedAtEpoch");
+}
+
 esp_err_t hermes_actions_health(char *err, size_t err_len) {
-  int status = 0;
-  memset(s_http_body, 0, sizeof(s_http_body));
-  esp_err_t result =
-      perform("/v1/health", "GET", NULL, NULL, s_http_body, sizeof(s_http_body),
-              &status, err, err_len);
+  cJSON *root = NULL;
+  esp_err_t result = perform_json("/v1/health", "GET", NULL, NULL, &root,
+                                  err, err_len);
   if (result != ESP_OK)
     return result;
-  cJSON *root = cJSON_Parse(s_http_body);
   bool ok = root && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "ok"));
   cJSON_Delete(root);
   if (!ok) {
@@ -221,15 +267,12 @@ esp_err_t hermes_actions_list_branches(const char *repo,
   char path[96];
   snprintf(path, sizeof(path), "/v1/git/branches?recent_hours=48&repo=%s",
            repo);
-  int status = 0;
   *count = 0;
-  memset(s_http_body, 0, sizeof(s_http_body));
+  cJSON *root = NULL;
   esp_err_t result =
-      perform(path, "GET", NULL, NULL, s_http_body, sizeof(s_http_body),
-              &status, err, err_len);
+      perform_json(path, "GET", NULL, NULL, &root, err, err_len);
   if (result != ESP_OK)
     return result;
-  cJSON *root = cJSON_Parse(s_http_body);
   cJSON *branches =
       root ? cJSON_GetObjectItemCaseSensitive(root, "branches") : NULL;
   if (!cJSON_IsArray(branches)) {
@@ -255,15 +298,12 @@ esp_err_t hermes_actions_list_pulls(const char *repo, hermes_git_pull_t *out,
                                       int *count, char *err, size_t err_len) {
   char path[80];
   snprintf(path, sizeof(path), "/v1/git/pulls?repo=%s", repo);
-  int status = 0;
   *count = 0;
-  memset(s_http_body, 0, sizeof(s_http_body));
+  cJSON *root = NULL;
   esp_err_t result =
-      perform(path, "GET", NULL, NULL, s_http_body, sizeof(s_http_body),
-              &status, err, err_len);
+      perform_json(path, "GET", NULL, NULL, &root, err, err_len);
   if (result != ESP_OK)
     return result;
-  cJSON *root = cJSON_Parse(s_http_body);
   cJSON *pulls = root ? cJSON_GetObjectItemCaseSensitive(root, "pulls") : NULL;
   if (!cJSON_IsArray(pulls)) {
     cJSON_Delete(root);
@@ -280,24 +320,44 @@ esp_err_t hermes_actions_list_pulls(const char *repo, hermes_git_pull_t *out,
   return ESP_OK;
 }
 
+esp_err_t hermes_actions_list_deployments(hermes_git_deployment_t *out,
+                                          int *count, char *err,
+                                          size_t err_len) {
+  *count = 0;
+  cJSON *root = NULL;
+  esp_err_t result = perform_json("/v1/git/deployments", "GET", NULL, NULL,
+                                  &root, err, err_len);
+  if (result != ESP_OK)
+    return result;
+  cJSON *deployments =
+      root ? cJSON_GetObjectItemCaseSensitive(root, "deployments") : NULL;
+  if (!cJSON_IsArray(deployments)) {
+    cJSON_Delete(root);
+    copy_text(err, err_len, "invalid deployment data");
+    return ESP_ERR_INVALID_RESPONSE;
+  }
+  int available = cJSON_GetArraySize(deployments);
+  if (available > 2)
+    available = 2;
+  for (int index = 0; index < available; index++)
+    fill_deployment(cJSON_GetArrayItem(deployments, index), &out[index]);
+  *count = available;
+  cJSON_Delete(root);
+  return ESP_OK;
+}
+
 esp_err_t hermes_actions_create_prod(const char *repo,
                                       const char *idempotency_key,
                                       hermes_git_creation_t *out, char *err,
                                       size_t err_len) {
   char body[80];
   snprintf(body, sizeof(body), "{\"repo\":\"%s\"}", repo);
-  int status = 0;
-  memset(s_http_body, 0, sizeof(s_http_body));
-  esp_err_t result =
-      perform("/v1/git/workflows/prod-from-main/pulls", "POST", idempotency_key,
-              body, s_http_body, sizeof(s_http_body), &status, err, err_len);
+  cJSON *root = NULL;
+  esp_err_t result = perform_json("/v1/git/workflows/prod-from-main/pulls",
+                                  "POST", idempotency_key, body, &root, err,
+                                  err_len);
   if (result != ESP_OK)
     return result;
-  cJSON *root = cJSON_Parse(s_http_body);
-  if (!root) {
-    copy_text(err, err_len, "service offline");
-    return ESP_FAIL;
-  }
   fill_creation(root, out);
   cJSON_Delete(root);
   return ESP_OK;
@@ -310,19 +370,12 @@ esp_err_t hermes_actions_create_from_branch(const char *repo, const char *branch
   char body[160];
   snprintf(body, sizeof(body), "{\"repo\":\"%s\",\"branch\":\"%s\"}", repo,
            branch);
-  int status = 0;
-  memset(s_http_body, 0, sizeof(s_http_body));
-  esp_err_t result =
-      perform("/v1/git/workflows/main-from-branch/pulls", "POST",
-              idempotency_key, body, s_http_body, sizeof(s_http_body), &status,
-              err, err_len);
+  cJSON *root = NULL;
+  esp_err_t result = perform_json(
+      "/v1/git/workflows/main-from-branch/pulls", "POST", idempotency_key,
+      body, &root, err, err_len);
   if (result != ESP_OK)
     return result;
-  cJSON *root = cJSON_Parse(s_http_body);
-  if (!root) {
-    copy_text(err, err_len, "service offline");
-    return ESP_FAIL;
-  }
   fill_creation(root, out);
   cJSON_Delete(root);
   return ESP_OK;
@@ -337,20 +390,14 @@ esp_err_t hermes_actions_merge(const char *repo, int number, const char *head_sh
   snprintf(path, sizeof(path), "/v1/git/pulls/%d/merge", number);
   snprintf(body, sizeof(body), "{\"repo\":\"%s\",\"headSha\":\"%s\"}", repo,
            head_sha);
-  int status = 0;
-  memset(s_http_body, 0, sizeof(s_http_body));
-  esp_err_t result =
-      perform(path, "POST", idempotency_key, body, s_http_body,
-              sizeof(s_http_body), &status, err, err_len);
+  cJSON *root = NULL;
+  esp_err_t result = perform_json(path, "POST", idempotency_key, body, &root,
+                                  err, err_len);
   if (result != ESP_OK)
     return result;
-  cJSON *root = cJSON_Parse(s_http_body);
-  if (!root) {
-    copy_text(err, err_len, "service offline");
-    return ESP_FAIL;
-  }
   memset(out, 0, sizeof(*out));
   out->merged = json_bool(root, "merged");
+  copy_text(out->sha, sizeof(out->sha), json_string(root, "sha"));
   copy_text(out->message, sizeof(out->message), json_string(root, "message"));
   cJSON_Delete(root);
   return ESP_OK;

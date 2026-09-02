@@ -132,6 +132,13 @@ export async function handleActionsRequest(
         branches: await service.listBranches(repo, Number(rawHours)),
       });
     }
+    if (method === "GET" && url.pathname === "/v1/git/deployments") {
+      return jsonResponse(200, { deployments: await service.listDeployments() });
+    }
+    if (method === "GET" && url.pathname === "/v1/git/deployment") {
+      const repo = service.parseRepo(url.searchParams.get("repo") ?? undefined);
+      return jsonResponse(200, { deployment: await service.getDeployment(repo) });
+    }
     if (method === "GET" && url.pathname === "/v1/git/pulls") {
       const repo = service.parseRepo(url.searchParams.get("repo") ?? undefined);
       return jsonResponse(200, { pulls: await service.listPulls(repo) });

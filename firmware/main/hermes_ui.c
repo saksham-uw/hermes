@@ -40,8 +40,9 @@ static const char *TAG = "hermes_ui";
 #define WIFI_WORKER_STACK_BYTES 6144
 #define GIT_WORKER_STACK_BYTES 12288
 #define HOME_WORKER_STACK_BYTES 12288
+#define DEPLOY_WORKER_STACK_BYTES 12288
 #define GIT_REPO_COUNT 2
-#define GIT_MENU_COUNT 2
+#define GIT_MENU_COUNT 3
 #define WORKFLOW_COUNT 2
 #define GIT_CONFIRM_COUNT 2
 #define MENU_TOP 22
@@ -52,6 +53,7 @@ typedef enum {
   SCR_HOME,
   SCR_GIT,
   SCR_GIT_MENU,
+  SCR_GIT_TAG,
   SCR_WORKFLOWS,
   SCR_GIT_LOADING,
   SCR_GIT_BRANCHES,
@@ -116,6 +118,13 @@ static int s_git_confirm_index;
 static int s_git_branch_count;
 static int s_git_pull_count;
 static bool s_git_busy;
+static bool s_deploy_busy;
+static hermes_git_deployment_t s_deployments[GIT_REPO_COUNT];
+static uint32_t s_deploy_last_attempt;
+static char s_deploy_error[HERMES_GIT_MSG_LEN];
+static int s_expected_deploy_repo = -1;
+static char s_expected_deploy_tag[HERMES_GIT_TAG_LEN];
+static bool s_git_result_tracks_build;
 static git_job_t s_git_job;
 static hermes_git_branch_t s_git_branches[HERMES_GIT_MAX_BRANCHES];
 static hermes_git_pull_t s_git_pulls[HERMES_GIT_MAX_PULLS];
@@ -149,7 +158,7 @@ static volatile uint32_t s_input_queue_overflows;
 static const char *MENU[] = {"git", "status", "settings", "wifi", "switch off"};
 static const int MENU_COUNT = sizeof(MENU) / sizeof(MENU[0]);
 static const char *GIT_REPOS[] = {"ultracontract", "ultrachatbot"};
-static const char *GIT_MENU[] = {"workflows", "merge"};
+static const char *GIT_MENU[] = {"workflows", "merge", "tag"};
 static const char *WORKFLOWS[] = {"git [main <- branch]", "git [prod <- main]"};
 static const char *GIT_CONFIRM[] = {"confirm merge", "cancel"};
 
@@ -753,16 +762,140 @@ static void draw_simple_list(const char *const *items, int count, int selected,
   }
 }
 
+static const char *deployment_state_label(const hermes_git_deployment_t *item) {
+  if (!item->valid)
+    return s_deploy_error[0] ? "PENDING" : "...";
+  if (strcmp(item->state, "queued") == 0)
+    return "QUEUED";
+  if (strcmp(item->state, "running") == 0)
+    return "RUNNING";
+  if (strcmp(item->state, "failed") == 0)
+    return "FAILED";
+  if (strcmp(item->state, "cancelled") == 0)
+    return "CANCELLED";
+  if (strcmp(item->state, "ready") == 0 && item->latest_tag[0])
+    return item->latest_tag;
+  return "--";
+}
+
+static uint16_t deployment_state_color(const hermes_git_deployment_t *item) {
+  if (!item->valid || strcmp(item->state, "queued") == 0 ||
+      strcmp(item->state, "running") == 0)
+    return COL_WARN;
+  if (strcmp(item->state, "ready") == 0)
+    return COL_OK;
+  if (strcmp(item->state, "failed") == 0)
+    return COL_BAD;
+  return COL_DIM;
+}
+
 static void draw_git(void) {
   draw_list_heading("// GIT");
   draw_simple_list(GIT_REPOS, GIT_REPO_COUNT, s_git_repo_index, 39, 42, 2);
+  for (int index = 0; index < GIT_REPO_COUNT; index++) {
+    const char *badge = deployment_state_label(&s_deployments[index]);
+    char text[24];
+    snprintf(text, sizeof(text), "[%s]", badge);
+    hermes_gfx_text(&s_gfx, GFX_W - 20 - hermes_gfx_text_width(text, 1),
+                    44 + index * 42, text,
+                    deployment_state_color(&s_deployments[index]), 1);
+  }
   draw_footer("BOOT next   TAP select   PWR back");
 }
 
 static void draw_git_menu(void) {
   draw_git_heading(NULL);
   draw_simple_list(GIT_MENU, GIT_MENU_COUNT, s_git_index, 39, 42, 2);
+  char badge[24];
+  snprintf(badge, sizeof(badge), "[%s]",
+           deployment_state_label(&s_deployments[s_git_repo_index]));
+  hermes_gfx_text(&s_gfx, GFX_W - 20 - hermes_gfx_text_width(badge, 1), 128,
+                  badge,
+                  deployment_state_color(&s_deployments[s_git_repo_index]), 1);
   draw_footer("BOOT next   TAP select   PWR back");
+}
+
+static uint32_t deployment_age_minutes(int64_t epoch) {
+  time_t current = time(NULL);
+  if (epoch <= 0 || current < epoch)
+    return 0;
+  return (uint32_t)((current - epoch) / 60);
+}
+
+static void draw_git_tag(void) {
+  draw_git_heading("TAG");
+  const hermes_git_deployment_t *item = &s_deployments[s_git_repo_index];
+  if (!item->valid) {
+    const char *message = s_deploy_busy
+                              ? "LOADING PRODUCTION STATUS"
+                              : strcmp(s_deploy_error, "actions access pending") == 0
+                                    ? "ACTIONS ACCESS PENDING"
+                                    : "STATUS UNAVAILABLE";
+    hermes_gfx_text(&s_gfx, 18, 46, message,
+                    s_deploy_busy ? COL_FOCUS : COL_WARN, 2);
+    if (s_deploy_error[0] && !s_deploy_busy)
+      hermes_gfx_text(&s_gfx, 18, 78, s_deploy_error, COL_DIM, 1);
+    draw_footer("TAP refresh   PWR back");
+    return;
+  }
+
+  bool waiting_for_expected =
+      s_expected_deploy_repo == s_git_repo_index &&
+      s_expected_deploy_tag[0] &&
+      strcmp(item->candidate_tag, s_expected_deploy_tag) != 0;
+  const char *state = waiting_for_expected ? "STARTING"
+                       : strcmp(item->state, "ready") == 0 ? "ECR READY"
+                       : strcmp(item->state, "running") == 0 ? "RUNNING"
+                       : strcmp(item->state, "queued") == 0 ? "QUEUED"
+                       : strcmp(item->state, "failed") == 0 ? "FAILED"
+                       : strcmp(item->state, "cancelled") == 0 ? "CANCELLED"
+                                                                : "UNKNOWN";
+  uint16_t state_color = strcmp(state, "ECR READY") == 0
+                             ? COL_OK
+                             : strcmp(state, "FAILED") == 0 ? COL_BAD : COL_WARN;
+  hermes_gfx_text(&s_gfx, 18, 29, state, state_color, 2);
+
+  char line[72];
+  if (waiting_for_expected) {
+    snprintf(line, sizeof(line), "NEXT TAG    %s", s_expected_deploy_tag);
+    hermes_gfx_text(&s_gfx, 18, 55, line, COL_FOCUS, 1);
+    snprintf(line, sizeof(line), "LAST READY  %s",
+             item->latest_tag[0] ? item->latest_tag : "--");
+    hermes_gfx_text(&s_gfx, 18, 73, line, COL_DIM, 1);
+  } else if (strcmp(item->state, "running") == 0 ||
+             strcmp(item->state, "queued") == 0) {
+    snprintf(line, sizeof(line), "NEXT TAG    %s", item->candidate_tag);
+    hermes_gfx_text(&s_gfx, 18, 55, line, COL_FOCUS, 1);
+    snprintf(line, sizeof(line), "LAST READY  %s",
+             item->latest_tag[0] ? item->latest_tag : "--");
+    hermes_gfx_text(&s_gfx, 18, 73, line, COL_DIM, 1);
+  } else {
+    snprintf(line, sizeof(line), "TAG  %s",
+             item->latest_tag[0] ? item->latest_tag : "--");
+    hermes_gfx_text(&s_gfx, 18, 53, line, COL_FOCUS, 2);
+  }
+
+  const char *tag = item->latest_tag[0] ? item->latest_tag : "--";
+  if (s_git_repo_index == 0) {
+    snprintf(line, sizeof(line), "WEB       :%s", tag);
+    hermes_gfx_text(&s_gfx, 260, 31, line, COL_TEXT, 1);
+    snprintf(line, sizeof(line), "MIGRATOR  :%s-migrator", tag);
+    hermes_gfx_text(&s_gfx, 260, 50, line, COL_TEXT, 1);
+    snprintf(line, sizeof(line), "API       :%s", tag);
+    hermes_gfx_text(&s_gfx, 260, 69, line, COL_TEXT, 1);
+  } else {
+    snprintf(line, sizeof(line), "API       :%s", tag);
+    hermes_gfx_text(&s_gfx, 260, 31, line, COL_TEXT, 1);
+    hermes_gfx_text(&s_gfx, 260, 50, "ALIAS     :latest", COL_TEXT, 1);
+  }
+  snprintf(line, sizeof(line), "RUN #%d   %lum ago%s", item->run_number,
+           (unsigned long)deployment_age_minutes(
+               strcmp(item->state, "ready") == 0 ? item->completed_at
+                                                   : item->started_at),
+           s_deploy_error[0] ? "   STALE" : "");
+  hermes_gfx_text(&s_gfx, 18, 112, line,
+                  s_deploy_error[0] ? COL_WARN : COL_DIM, 1);
+  draw_footer("TAP refresh   PWR back");
 }
 
 static void draw_workflows(void) {
@@ -846,7 +979,8 @@ static void draw_git_result(void) {
   hermes_gfx_text(&s_gfx, 18, 40, s_git_result_title, COL_FOCUS, 2);
   if (s_git_result_detail[0])
     hermes_gfx_text(&s_gfx, 18, 78, s_git_result_detail, COL_DIM, 1);
-  draw_footer("TAP or PWR back");
+  draw_footer(s_git_result_tracks_build ? "TAP track build   PWR back"
+                                        : "TAP or PWR back");
 }
 
 static bool pomodoro_running(void) {
@@ -932,6 +1066,66 @@ static void maybe_start_home_refresh(uint32_t now) {
   mark_dirty();
 }
 
+static void deployment_refresh_task(void *argument) {
+  (void)argument;
+  hermes_git_deployment_t deployments[GIT_REPO_COUNT] = {0};
+  char error[HERMES_GIT_MSG_LEN] = {0};
+  int count = 0;
+  esp_err_t result = hermes_actions_list_deployments(
+      deployments, &count, error, sizeof(error));
+  if (s_lock)
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+  if (result == ESP_OK && count == GIT_REPO_COUNT) {
+    memcpy(s_deployments, deployments, sizeof(s_deployments));
+    s_deploy_error[0] = 0;
+    if (s_expected_deploy_repo >= 0 &&
+        strcmp(s_deployments[s_expected_deploy_repo].candidate_tag,
+               s_expected_deploy_tag) == 0) {
+      s_expected_deploy_repo = -1;
+      s_expected_deploy_tag[0] = 0;
+    }
+  } else {
+    snprintf(s_deploy_error, sizeof(s_deploy_error), "%s",
+             error[0] ? error : "status unavailable");
+  }
+  s_deploy_busy = false;
+  mark_dirty();
+  if (s_lock)
+    xSemaphoreGive(s_lock);
+  ESP_LOGI(TAG, "deployment refresh finished: %s count=%d watermark=%u",
+           esp_err_to_name(result), count,
+           (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  vTaskDelete(NULL);
+}
+
+static void maybe_start_deployment_refresh(uint32_t now, bool force) {
+  bool visible = s_screen == SCR_GIT || s_screen == SCR_GIT_MENU ||
+                 s_screen == SCR_GIT_TAG;
+  if (!visible || s_deploy_busy || s_git_busy)
+    return;
+  if (!hermes_wifi_is_connected() || !hermes_actions_configured()) {
+    snprintf(s_deploy_error, sizeof(s_deploy_error), "service offline");
+    return;
+  }
+  bool active = s_expected_deploy_repo >= 0;
+  for (int index = 0; index < GIT_REPO_COUNT; index++)
+    active = active || strcmp(s_deployments[index].state, "running") == 0 ||
+             strcmp(s_deployments[index].state, "queued") == 0;
+  uint32_t interval = active ? 10000U : 60000U;
+  if (!force && s_deploy_last_attempt &&
+      now - s_deploy_last_attempt < interval)
+    return;
+  s_deploy_last_attempt = now;
+  s_deploy_busy = true;
+  if (xTaskCreate(deployment_refresh_task, "deploy_status",
+                  DEPLOY_WORKER_STACK_BYTES, NULL, 4, NULL) != pdPASS) {
+    s_deploy_busy = false;
+    snprintf(s_deploy_error, sizeof(s_deploy_error),
+             "status refresh could not start");
+  }
+  mark_dirty();
+}
+
 static void render_lcd(void) {
   hermes_gfx_clear(&s_gfx, COL_BG);
   switch (s_screen) {
@@ -946,6 +1140,9 @@ static void render_lcd(void) {
     break;
   case SCR_GIT_MENU:
     draw_git_menu();
+    break;
+  case SCR_GIT_TAG:
+    draw_git_tag();
     break;
   case SCR_WORKFLOWS:
     draw_workflows();
@@ -1001,6 +1198,8 @@ static void move_down(void) {
   case SCR_GIT_MENU:
     s_git_index = (s_git_index + 1) % GIT_MENU_COUNT;
     break;
+  case SCR_GIT_TAG:
+    return;
   case SCR_WORKFLOWS:
     s_workflow_index = (s_workflow_index + 1) % WORKFLOW_COUNT;
     break;
@@ -1054,6 +1253,9 @@ static void go_back(void) {
     break;
   case SCR_GIT_MENU:
     s_screen = SCR_GIT;
+    break;
+  case SCR_GIT_TAG:
+    s_screen = SCR_GIT_MENU;
     break;
   case SCR_WORKFLOWS:
     s_screen = SCR_GIT_MENU;
@@ -1167,6 +1369,7 @@ static void activate_menu_index(int index) {
     s_git_index = 0;
     note_activity();
     mark_dirty();
+    maybe_start_deployment_refresh(now_ms(), true);
     break;
   case 1:
     s_navigation_generation++;
@@ -1189,6 +1392,7 @@ static void activate_menu_index(int index) {
 }
 
 static void show_git_result(const char *title, const char *detail) {
+  s_git_result_tracks_build = false;
   snprintf(s_git_result_title, sizeof(s_git_result_title), "%s", title);
   snprintf(s_git_result_detail, sizeof(s_git_result_detail), "%s",
            detail ? detail : "");
@@ -1269,8 +1473,18 @@ static void git_worker(void *argument) {
         mark_dirty();
       }
     } else if (job == GIT_JOB_MERGE) {
-      show_git_result(merged.merged ? "merged" : "merge failed",
-                     merged.message);
+      bool tracks_build = merged.merged && strcmp(s_git_detail.base, "prod") == 0;
+      if (tracks_build) {
+        s_expected_deploy_repo = s_git_repo_index;
+        snprintf(s_expected_deploy_tag, sizeof(s_expected_deploy_tag), "%.8s",
+                 merged.sha);
+        s_deploy_last_attempt = 0;
+        show_git_result("merged - build starting", "TAP track build");
+        s_git_result_tracks_build = true;
+      } else {
+        show_git_result(merged.merged ? "merged" : "merge failed",
+                        merged.message);
+      }
     } else {
       char title[48];
       snprintf(title, sizeof(title), "%s #%d",
@@ -1329,9 +1543,14 @@ static void activate_git_menu(void) {
     s_screen = SCR_WORKFLOWS;
     s_workflow_index = 0;
     mark_dirty();
-  } else {
+  } else if (s_git_index == 1) {
     start_git_job(GIT_JOB_PULLS, "merge", SCR_GIT_MENU,
                   HERMES_AVATAR_STATE_THINKING);
+  } else {
+    s_navigation_generation++;
+    s_screen = SCR_GIT_TAG;
+    maybe_start_deployment_refresh(now_ms(), true);
+    mark_dirty();
   }
 }
 
@@ -1464,6 +1683,9 @@ static void handle_tap(uint16_t x, uint16_t y) {
   case SCR_GIT_MENU:
     activate_git_menu();
     break;
+  case SCR_GIT_TAG:
+    maybe_start_deployment_refresh(now_ms(), true);
+    break;
   case SCR_WORKFLOWS:
     activate_workflow();
     break;
@@ -1482,7 +1704,14 @@ static void handle_tap(uint16_t x, uint16_t y) {
     activate_git_confirm();
     break;
   case SCR_GIT_RESULT:
-    go_back();
+    if (s_git_result_tracks_build) {
+      s_git_result_tracks_build = false;
+      s_screen = SCR_GIT_TAG;
+      maybe_start_deployment_refresh(now_ms(), true);
+      mark_dirty();
+    } else {
+      go_back();
+    }
     break;
   case SCR_SETTINGS:
     activate_settings();
@@ -1622,6 +1851,9 @@ static void ui_task(void *argument) {
       }
       maybe_start_home_refresh(frame_now);
     }
+    if (s_screen == SCR_GIT || s_screen == SCR_GIT_MENU ||
+        s_screen == SCR_GIT_TAG)
+      maybe_start_deployment_refresh(frame_now, false);
     bool avatar_active = s_screen == SCR_MENU || s_screen == SCR_HOME;
     if (avatar_active && hermes_avatar_tick(&s_avatar, frame_now))
       mark_dirty();

@@ -286,11 +286,40 @@ Selecting a repository opens:
 
 1. `workflows`
 2. `merge`
+3. `tag`
 
 Selecting `workflows` opens:
 
 1. `git [main <- branch]`
 2. `git [prod <- main]`
+
+### `tag` and production-build status
+
+The Git repository picker shows a right-aligned production badge for each
+repository: the eight-character tag from the latest successful run, `QUEUED`,
+`RUNNING`, `FAILED`, `CANCELLED`, `PENDING`, or `--`. This is display-only and
+does not change the locked BOOT-highlight/tap-select contract.
+
+The `tag` detail page tracks only production push runs from the exact workflows
+`.github/workflows/deploy.yml` in `ultracontract` and
+`.github/workflows/push-ecr-prod.yml` in `ultrachatbot`. Immutable tags are
+derived from the workflow run's `head_sha[0..8]`; job logs are never downloaded
+or parsed.
+
+- `ultracontract` shows web `:<sha>`, migrator `:<sha>-migrator`, and API
+  `:<sha>`.
+- `ultrachatbot` shows API `:<sha>` plus its moving `:latest` alias.
+- While a newer run is starting, queued, or running, the primary status replaces
+  the candidate tag while the last successful tag remains visible.
+- Failed or cancelled runs never replace the last successful tag.
+- The visible Tag page polls every 10 seconds during active work and every 60
+  seconds otherwise. Network work remains outside the UI task.
+- A successful merge whose base is `prod` offers `TAP track build`, carries the
+  returned merge SHA into the Tag screen, and shows `STARTING` until the matching
+  workflow run appears.
+- Until the fine-grained token has `Actions: read` approval for both target
+  repositories, the UI shows `ACTIONS ACCESS PENDING` and retries without a
+  firmware update.
 
 ### `git [prod <- main]`
 

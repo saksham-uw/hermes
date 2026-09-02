@@ -14,6 +14,18 @@ function fakeService(): GitWorkflowService {
     async listPulls() {
       return [];
     },
+    async listDeployments() {
+      return [{
+        repo: "ultracontract",
+        state: "running",
+        runNumber: 256,
+        candidateTag: "12345678",
+        latestTag: "78f1f616",
+        latestRunNumber: 255,
+        startedAtEpoch: 1788343200,
+        completedAtEpoch: 1788339600,
+      }];
+    },
     parseRepo(value?: string) {
       if (value === "ultracontract" || value === "ultrachatbot") return value;
       throw new InputError("repo must be ultracontract or ultrachatbot");
@@ -109,5 +121,17 @@ test("git routes require a known repo", async () => {
         message: "repo must be ultracontract or ultrachatbot",
       },
     });
+  });
+});
+
+test("deployment summary uses a bounded normalized contract", async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/v1/git/deployments`, {
+      headers: { Authorization: `Bearer ${deviceToken}` },
+    });
+    assert.equal(response.status, 200);
+    const body = await response.json() as { deployments: Array<Record<string, unknown>> };
+    assert.equal(body.deployments[0].state, "running");
+    assert.equal(body.deployments[0].latestTag, "78f1f616");
   });
 });
