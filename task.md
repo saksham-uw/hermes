@@ -230,6 +230,30 @@ it never retries in a tight loop.
 5. Add firmware clients and cached renderers, then flash-test online, stale,
    oversized-response, rate-limit, and navigation-during-refresh cases.
 
+### Home implementation status — 2026-09-02
+
+- Delivered root menu/home navigation and the isolated five-page wrapping swipe
+  carousel. Menu/list taps still activate only the BOOT-highlighted row; home
+  uses only press-to-release horizontal displacement.
+- Delivered generated clock assets sourced directly from `design_doc.txt`, a
+  Toronto DST-aware clock, PCF85063 restore/write support, and SNTP correction.
+- Delivered the 25/5/15 Pomodoro state machine with absolute deadlines, NVS
+  transition persistence, four-focus long breaks, and no interval auto-start.
+- Delivered and deployed the authenticated read-only Weather, Crypto, and Stocks
+  Lambda routes. Provider responses are normalized and cached; automated service
+  tests cover the configured symbols, caching, and oversized upstream rejection.
+- Delivered bounded firmware clients, NVS last-good caches, stale/error labels,
+  background refresh workers, and avatar thinking/busy integration.
+- Built and flashed the ESP32-S3 over `/dev/cu.usbmodem101`. Flash SHA checks
+  passed. The flashed image booted through panel/touch/UI initialization, joined
+  Wi-Fi, synchronized network time, wrote the RTC successfully, entered the
+  30-second avatar rest state, and remained stable under serial monitoring with
+  no panic, watchdog, brownout, or reset loop.
+- Fixed the home-data startup race found during hardware use: an entry made
+  before Wi-Fi association no longer inherits the normal 15-minute/60-second
+  success cooldown. The visible page refreshes immediately when Wi-Fi becomes
+  available.
+
 ### Confirmed product decisions — 2026-09-02
 
 - Timezone: `America/Toronto`, including daylight-saving transitions.

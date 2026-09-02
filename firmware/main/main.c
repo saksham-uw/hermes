@@ -1,6 +1,7 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "hermes_ui.h"
+#include "home_dashboard.h"
 #include "nvs_flash.h"
 #include "wifi_connect.h"
 
@@ -53,4 +54,6 @@ void app_main(void) {
   esp_err_t wifi = hermes_wifi_start();
   if (wifi != ESP_OK)
     ESP_LOGW(TAG, "Wi-Fi startup deferred: %s", esp_err_to_name(wifi));
+  else
+    home_dashboard_start_network_time();
 }

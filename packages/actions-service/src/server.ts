@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { handleActionsRequest } from "./http.js";
 import type { GitWorkflowService } from "./service.js";
+import { HomeDataService } from "./home.js";
 
 const BODY_LIMIT = 16 * 1024;
 
@@ -32,6 +33,7 @@ async function readBody(request: IncomingMessage): Promise<{ body: string; tooLa
 export function createActionsServer(
   service: GitWorkflowService,
   deviceToken: string,
+  home = new HomeDataService(),
 ) {
   return createServer(async (request, response) => {
     const method = request.method ?? "GET";
@@ -55,7 +57,7 @@ export function createActionsServer(
           url: request.url ?? "/",
           headers: collectHeaders(request),
           body,
-        });
+        }, home);
     response.writeHead(result.status, {
       ...result.headers,
       "Content-Length": Buffer.byteLength(result.body),

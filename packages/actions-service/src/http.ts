@@ -3,6 +3,7 @@ import { GitHubApiError } from "./github.js";
 import { IdempotencyConflictError } from "./idempotency.js";
 import { InputError, type GitWorkflowService } from "./service.js";
 import type { ServiceErrorBody, WorkflowId } from "./types.js";
+import { HomeDataError, type HomeDataService } from "./home.js";
 
 const BODY_LIMIT = 16 * 1024;
 
@@ -93,6 +94,9 @@ function mappedError(error: unknown): HttpError {
     const code = error.status === 401 || error.status === 403 ? "github_auth" : "github_error";
     return new HttpError(status, code, error.message.slice(0, 180));
   }
+  if (error instanceof HomeDataError) {
+    return new HttpError(502, "home_data_error", error.message.slice(0, 180));
+  }
   return new HttpError(502, "upstream_error", "Action service request failed");
 }
 
@@ -100,6 +104,7 @@ export async function handleActionsRequest(
   service: GitWorkflowService,
   deviceToken: string,
   request: ActionsHttpRequest,
+  home?: HomeDataService,
 ): Promise<ActionsHttpResponse> {
   try {
     if (!tokenMatches(header(request, "authorization"), deviceToken)) {
@@ -110,6 +115,15 @@ export async function handleActionsRequest(
 
     if (method === "GET" && url.pathname === "/v1/health") {
       return jsonResponse(200, { ok: true, service: "hermes-actions", version: 1 });
+    }
+    if (method === "GET" && url.pathname === "/v1/home/weather" && home) {
+      return jsonResponse(200, await home.weather());
+    }
+    if (method === "GET" && url.pathname === "/v1/home/markets/crypto" && home) {
+      return jsonResponse(200, await home.crypto());
+    }
+    if (method === "GET" && url.pathname === "/v1/home/markets/stocks" && home) {
+      return jsonResponse(200, await home.stocks());
     }
     if (method === "GET" && url.pathname === "/v1/git/branches") {
       const repo = service.parseRepo(url.searchParams.get("repo") ?? undefined);

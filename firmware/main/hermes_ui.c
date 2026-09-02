@@ -18,11 +18,16 @@
 #include "hermes_settings.h"
 #include "hermes_touch.h"
 #include "hermes_actions.h"
+#include "home_clock_assets.h"
+#include "home_dashboard.h"
+#include "home_data.h"
 #include "sdkconfig.h"
 #include "wifi_connect.h"
+#include <stdlib.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static const char *TAG = "hermes_ui";
 
@@ -34,6 +39,7 @@ static const char *TAG = "hermes_ui";
 #define INPUT_QUEUE_LENGTH 16
 #define WIFI_WORKER_STACK_BYTES 6144
 #define GIT_WORKER_STACK_BYTES 12288
+#define HOME_WORKER_STACK_BYTES 12288
 #define GIT_REPO_COUNT 2
 #define GIT_MENU_COUNT 2
 #define WORKFLOW_COUNT 2
@@ -43,6 +49,7 @@ static const char *TAG = "hermes_ui";
 
 typedef enum {
   SCR_MENU = 0,
+  SCR_HOME,
   SCR_GIT,
   SCR_GIT_MENU,
   SCR_WORKFLOWS,
@@ -56,6 +63,15 @@ typedef enum {
   SCR_SETTINGS,
   SCR_WIFI,
 } screen_t;
+
+typedef enum {
+  HOME_CLOCK = 0,
+  HOME_POMODORO,
+  HOME_WEATHER,
+  HOME_CRYPTO,
+  HOME_STOCKS,
+  HOME_PAGE_COUNT,
+} home_page_t;
 
 typedef enum {
   GIT_JOB_BRANCHES = 0,
@@ -82,6 +98,14 @@ static hermes_avatar_t s_avatar;
 static SemaphoreHandle_t s_lock;
 static volatile bool s_dirty = true;
 static screen_t s_screen = SCR_MENU;
+static home_page_t s_home_page = HOME_CLOCK;
+static home_weather_t s_home_weather;
+static home_markets_t s_home_crypto;
+static home_markets_t s_home_stocks;
+static bool s_home_busy;
+static uint32_t s_home_last_attempt[HOME_PAGE_COUNT];
+static char s_home_error[HOME_PAGE_COUNT][40];
+static uint32_t s_last_home_clock_second = UINT32_MAX;
 static int s_menu_index;
 static int s_git_repo_index;
 static int s_git_index;
@@ -320,6 +344,220 @@ static void draw_menu(void) {
   hermes_gfx_vline(&s_gfx, 403, 24, 118, COL_LINE);
   draw_avatar_panel(516, 83);
   draw_footer("BOOT next   TAP select   PWR back/hold off");
+}
+
+static const char *HOME_TITLES[] = {"CLOCK", "POMODORO", "WEATHER",
+                                    "CRYPTO", "STOCKS"};
+
+static void draw_home_shell(void) {
+  char title[40];
+  snprintf(title, sizeof(title), "// HOME :: %s", HOME_TITLES[s_home_page]);
+  hermes_gfx_text(&s_gfx, 12, 5, title, COL_FOCUS, 1);
+  hermes_gfx_hline(&s_gfx, 12, 16, GFX_W - 24, COL_LINE);
+  hermes_gfx_vline(&s_gfx, 403, 24, 118, COL_LINE);
+  draw_avatar_panel(516, 83);
+
+  char pages[24] = {0};
+  for (int index = 0; index < HOME_PAGE_COUNT; index++)
+    strlcat(pages, index == s_home_page ? "[o]" : " . ", sizeof(pages));
+  hermes_gfx_text(&s_gfx, 284, GFX_H - 13, pages, COL_FOCUS, 1);
+  draw_footer(s_home_page == HOME_POMODORO
+                  ? "BOOT timer   SWIPE pages   PWR menu"
+                  : "SWIPE pages   PWR menu");
+}
+
+static int clock_digit_index(int digit) { return digit == 0 ? 9 : digit - 1; }
+
+static int draw_clock_glyph(int glyph, int x, int y, int scale,
+                            uint16_t color) {
+  if (glyph < 0 || glyph >= HOME_CLOCK_GLYPH_COUNT)
+    return x;
+  for (int row = 0; row < HOME_CLOCK_GLYPH_HEIGHT; row++) {
+    uint32_t bits = g_home_clock_rows[glyph][row];
+    for (int column = 0; column < g_home_clock_widths[glyph]; column++) {
+      if (bits & (1U << column))
+        hermes_gfx_fill_rect(&s_gfx, x + column * scale, y + row * scale,
+                             scale, scale, color);
+    }
+  }
+  return x + g_home_clock_widths[glyph] * scale;
+}
+
+static void draw_clock_home(void) {
+  struct tm local;
+  if (!home_dashboard_local_time(&local)) {
+    hermes_gfx_text(&s_gfx, 30, 60, "SYNCING TIME", COL_WARN, 3);
+    hermes_gfx_text(&s_gfx, 30, 94, "RTC + NETWORK", COL_DIM, 1);
+    return;
+  }
+  int hour = local.tm_hour % 12;
+  if (hour == 0)
+    hour = 12;
+  int glyphs[4] = {-1, clock_digit_index(hour % 10),
+                   clock_digit_index(local.tm_min / 10),
+                   clock_digit_index(local.tm_min % 10)};
+  if (hour >= 10)
+    glyphs[0] = clock_digit_index(hour / 10);
+  const int digit_scale = 7;
+  const int marker_scale = 2;
+  int total = (glyphs[0] >= 0 ? g_home_clock_widths[glyphs[0]] * digit_scale + 8 : 0) +
+              g_home_clock_widths[glyphs[1]] * digit_scale + 20 +
+              g_home_clock_widths[glyphs[2]] * digit_scale + 8 +
+              g_home_clock_widths[glyphs[3]] * digit_scale + 14 +
+              g_home_clock_widths[local.tm_hour < 12 ? 10 : 11] * marker_scale;
+  int x = 12 + (378 - total) / 2;
+  int y = 37;
+  if (glyphs[0] >= 0) {
+    x = draw_clock_glyph(glyphs[0], x, y, digit_scale, COL_FOCUS) + 8;
+  }
+  x = draw_clock_glyph(glyphs[1], x, y, digit_scale, COL_FOCUS) + 8;
+  time_t epoch = time(NULL);
+  if ((epoch & 1) == 0) {
+    hermes_gfx_fill_rect(&s_gfx, x + 2, y + 13, 8, 8, COL_FOCUS);
+    hermes_gfx_fill_rect(&s_gfx, x + 2, y + 36, 8, 8, COL_FOCUS);
+  } else {
+    hermes_gfx_rect(&s_gfx, x + 2, y + 13, 8, 8, COL_DIM);
+    hermes_gfx_rect(&s_gfx, x + 2, y + 36, 8, 8, COL_DIM);
+  }
+  x += 20;
+  x = draw_clock_glyph(glyphs[2], x, y, digit_scale, COL_FOCUS) + 8;
+  x = draw_clock_glyph(glyphs[3], x, y, digit_scale, COL_FOCUS) + 14;
+  draw_clock_glyph(local.tm_hour < 12 ? 10 : 11, x, y + 20, marker_scale,
+                   COL_TEXT);
+
+  static const char *weekdays[] = {"SUN", "MON", "TUE", "WED",
+                                    "THU", "FRI", "SAT"};
+  static const char *months[] = {"JAN", "FEB", "MAR", "APR", "MAY", "JUN",
+                                  "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"};
+  char date[40];
+  snprintf(date, sizeof(date), "%s  %s %02d  %04d", weekdays[local.tm_wday],
+           months[local.tm_mon], local.tm_mday, local.tm_year + 1900);
+  int date_x = 12 + (378 - hermes_gfx_text_width(date, 1)) / 2;
+  hermes_gfx_text(&s_gfx, date_x, 112, date, COL_DIM, 1);
+}
+
+static void draw_pomodoro_home(void) {
+  home_pomo_view_t view;
+  home_dashboard_pomodoro_view(&view);
+  const char *kind = view.kind == HOME_POMO_FOCUS
+                         ? "FOCUS"
+                         : view.kind == HOME_POMO_LONG_BREAK ? "LONG BREAK"
+                                                             : "BREAK";
+  const char *state = view.state == HOME_POMO_RUNNING
+                          ? "RUNNING"
+                          : view.state == HOME_POMO_PAUSED ? "PAUSED" : "READY";
+  char timer[16];
+  snprintf(timer, sizeof(timer), "%02lu:%02lu",
+           (unsigned long)(view.remaining_seconds / 60U),
+           (unsigned long)(view.remaining_seconds % 60U));
+  hermes_gfx_text(&s_gfx, 24, 29, kind, COL_DIM, 2);
+  hermes_gfx_text(&s_gfx, 24, 54, timer,
+                  view.just_completed ? COL_OK : COL_FOCUS, 4);
+  char detail[48];
+  snprintf(detail, sizeof(detail), "%s   SET %u/4", state,
+           (unsigned)view.completed_focuses);
+  hermes_gfx_text(&s_gfx, 24, 94, detail,
+                  view.state == HOME_POMO_RUNNING ? COL_OK : COL_TEXT, 1);
+  int percent = view.total_seconds
+                    ? (int)((view.total_seconds - view.remaining_seconds) * 100U /
+                            view.total_seconds)
+                    : 100;
+  draw_progress(24, 115, 340, percent, COL_FOCUS);
+  hermes_gfx_text(&s_gfx, 24, 132,
+                  view.state == HOME_POMO_READY
+                      ? "BOOT START"
+                      : view.state == HOME_POMO_RUNNING ? "BOOT PAUSE"
+                                                        : "BOOT RESET",
+                  COL_DIM, 1);
+}
+
+static uint32_t data_age_minutes(int64_t observed_at) {
+  time_t current = time(NULL);
+  if (observed_at <= 0 || current < observed_at)
+    return 0;
+  return (uint32_t)((current - observed_at) / 60);
+}
+
+static void draw_weather_home(void) {
+  if (!s_home_weather.valid) {
+    hermes_gfx_text(&s_gfx, 24, 57,
+                    s_home_busy ? "LOADING WEATHER" : "WEATHER UNAVAILABLE",
+                    s_home_busy ? COL_FOCUS : COL_WARN, 2);
+    if (s_home_error[HOME_WEATHER][0])
+      hermes_gfx_text(&s_gfx, 24, 88, s_home_error[HOME_WEATHER], COL_DIM, 1);
+    return;
+  }
+  char temperature[20];
+  snprintf(temperature, sizeof(temperature), "%.1f C",
+           s_home_weather.temperature_c);
+  hermes_gfx_text(&s_gfx, 22, 29, s_home_weather.location, COL_DIM, 1);
+  hermes_gfx_text(&s_gfx, 22, 45, temperature, COL_FOCUS, 3);
+  hermes_gfx_text(&s_gfx, 22, 77, s_home_weather.condition, COL_TEXT, 1);
+  char details[48];
+  snprintf(details, sizeof(details), "HI %.0f  LO %.0f  RAIN %u%%",
+           s_home_weather.high_c, s_home_weather.low_c,
+           (unsigned)s_home_weather.precipitation_percent);
+  hermes_gfx_text(&s_gfx, 22, 96, details, COL_TEXT, 1);
+  snprintf(details, sizeof(details), "%s %lum  OPEN-METEO",
+           s_home_error[HOME_WEATHER][0] ? "STALE" : "UPDATED",
+           (unsigned long)data_age_minutes(s_home_weather.observed_at));
+  hermes_gfx_text(&s_gfx, 22, 119, details,
+                  s_home_error[HOME_WEATHER][0] ? COL_WARN : COL_DIM, 1);
+}
+
+static void draw_markets_home(const home_markets_t *markets) {
+  home_page_t page = markets == &s_home_crypto ? HOME_CRYPTO : HOME_STOCKS;
+  if (!markets->valid) {
+    hermes_gfx_text(&s_gfx, 24, 57,
+                    s_home_busy ? "LOADING QUOTES" : "QUOTES UNAVAILABLE",
+                    s_home_busy ? COL_FOCUS : COL_WARN, 2);
+    if (s_home_error[page][0])
+      hermes_gfx_text(&s_gfx, 24, 88, s_home_error[page], COL_DIM, 1);
+    return;
+  }
+  for (int index = 0; index < markets->count; index++) {
+    const home_quote_t *quote = &markets->quotes[index];
+    int y = 27 + index * 25;
+    char price[24];
+    char change[16];
+    if (quote->price_usd >= 1000.0f)
+      snprintf(price, sizeof(price), "$%.0f", quote->price_usd);
+    else
+      snprintf(price, sizeof(price), "$%.2f", quote->price_usd);
+    snprintf(change, sizeof(change), "%+.2f%%", quote->change_percent);
+    hermes_gfx_text(&s_gfx, 20, y, quote->symbol, COL_TEXT, 2);
+    hermes_gfx_text(&s_gfx, 116, y + 3, price, COL_FOCUS, 1);
+    hermes_gfx_text(&s_gfx, 278, y + 3, change,
+                    quote->change_percent >= 0 ? COL_OK : COL_BAD, 1);
+  }
+  char status[40];
+  snprintf(status, sizeof(status), "%s%s  %lum", s_home_error[page][0] ? "STALE " : "",
+           markets->status, (unsigned long)data_age_minutes(markets->observed_at));
+  hermes_gfx_text(&s_gfx, 20, 132, status,
+                  s_home_error[page][0] ? COL_WARN : COL_DIM, 1);
+}
+
+static void draw_home(void) {
+  draw_home_shell();
+  switch (s_home_page) {
+  case HOME_CLOCK:
+    draw_clock_home();
+    break;
+  case HOME_POMODORO:
+    draw_pomodoro_home();
+    break;
+  case HOME_WEATHER:
+    draw_weather_home();
+    break;
+  case HOME_CRYPTO:
+    draw_markets_home(&s_home_crypto);
+    break;
+  case HOME_STOCKS:
+    draw_markets_home(&s_home_stocks);
+    break;
+  case HOME_PAGE_COUNT:
+    break;
+  }
 }
 
 static void draw_panel(int x, int width, const char *title) {
@@ -611,11 +849,97 @@ static void draw_git_result(void) {
   draw_footer("TAP or PWR back");
 }
 
+static bool pomodoro_running(void) {
+  home_pomo_view_t view;
+  home_dashboard_pomodoro_view(&view);
+  return view.state == HOME_POMO_RUNNING;
+}
+
+static void home_refresh_task(void *argument) {
+  home_page_t page = (home_page_t)(intptr_t)argument;
+  char error[40] = {0};
+  esp_err_t result = ESP_ERR_INVALID_ARG;
+  home_weather_t weather;
+  home_markets_t markets;
+  if (page == HOME_WEATHER)
+    result = home_data_fetch_weather(&weather, error, sizeof(error));
+  else if (page == HOME_CRYPTO)
+    result = home_data_fetch_crypto(&markets, error, sizeof(error));
+  else if (page == HOME_STOCKS)
+    result = home_data_fetch_stocks(&markets, error, sizeof(error));
+
+  if (s_lock)
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+  if (result == ESP_OK) {
+    if (page == HOME_WEATHER)
+      s_home_weather = weather;
+    else if (page == HOME_CRYPTO)
+      s_home_crypto = markets;
+    else if (page == HOME_STOCKS)
+      s_home_stocks = markets;
+    s_home_error[page][0] = 0;
+  } else {
+    snprintf(s_home_error[page], sizeof(s_home_error[page]), "%s",
+             error[0] ? error : "DATA UNAVAILABLE");
+  }
+  s_home_busy = false;
+  if (s_screen == SCR_HOME)
+    hermes_avatar_set_state(&s_avatar,
+                            pomodoro_running() ? HERMES_AVATAR_STATE_BUSY
+                                               : HERMES_AVATAR_STATE_IDLE,
+                            now_ms());
+  mark_dirty();
+  if (s_lock)
+    xSemaphoreGive(s_lock);
+  ESP_LOGI(TAG, "home refresh %d finished: %s; stack watermark=%u", (int)page,
+           esp_err_to_name(result),
+           (unsigned)uxTaskGetStackHighWaterMark(NULL));
+  vTaskDelete(NULL);
+}
+
+static void maybe_start_home_refresh(uint32_t now) {
+  if (s_screen != SCR_HOME || s_home_busy || s_home_page < HOME_WEATHER ||
+      s_home_page >= HOME_PAGE_COUNT)
+    return;
+  uint32_t interval = s_home_page == HOME_WEATHER ? 15U * 60U * 1000U : 60000U;
+  uint32_t last = s_home_last_attempt[s_home_page];
+  if (!hermes_wifi_is_connected()) {
+    if (!last || now - last >= 30000U) {
+      s_home_last_attempt[s_home_page] = now;
+      snprintf(s_home_error[s_home_page], sizeof(s_home_error[s_home_page]),
+               "WAITING FOR WIFI");
+      mark_dirty();
+    }
+    return;
+  }
+  if (strcmp(s_home_error[s_home_page], "WAITING FOR WIFI") == 0) {
+    last = 0;
+    s_home_last_attempt[s_home_page] = 0;
+  }
+  if (last && now - last < interval)
+    return;
+  s_home_last_attempt[s_home_page] = now;
+  s_home_busy = true;
+  s_home_error[s_home_page][0] = 0;
+  hermes_avatar_set_state(&s_avatar, HERMES_AVATAR_STATE_THINKING, now);
+  ESP_LOGI(TAG, "starting home refresh for %s", HOME_TITLES[s_home_page]);
+  if (xTaskCreate(home_refresh_task, "home_refresh", HOME_WORKER_STACK_BYTES,
+                  (void *)(intptr_t)s_home_page, 4, NULL) != pdPASS) {
+    s_home_busy = false;
+    snprintf(s_home_error[s_home_page], sizeof(s_home_error[s_home_page]),
+             "REFRESH COULD NOT START");
+  }
+  mark_dirty();
+}
+
 static void render_lcd(void) {
   hermes_gfx_clear(&s_gfx, COL_BG);
   switch (s_screen) {
   case SCR_MENU:
     draw_menu();
+    break;
+  case SCR_HOME:
+    draw_home();
     break;
   case SCR_GIT:
     draw_git();
@@ -662,6 +986,15 @@ static void move_down(void) {
   case SCR_MENU:
     s_menu_index = (s_menu_index + 1) % MENU_COUNT;
     break;
+  case SCR_HOME:
+    if (s_home_page != HOME_POMODORO)
+      return;
+    home_dashboard_pomodoro_boot();
+    hermes_avatar_set_state(&s_avatar,
+                            pomodoro_running() ? HERMES_AVATAR_STATE_BUSY
+                                               : HERMES_AVATAR_STATE_IDLE,
+                            now_ms());
+    break;
   case SCR_GIT:
     s_git_repo_index = (s_git_repo_index + 1) % GIT_REPO_COUNT;
     break;
@@ -707,6 +1040,11 @@ static void go_back(void) {
   s_navigation_generation++;
   switch (s_screen) {
   case SCR_MENU:
+    s_home_page = HOME_CLOCK;
+    s_screen = SCR_HOME;
+    break;
+  case SCR_HOME:
+    s_screen = SCR_MENU;
     break;
   case SCR_GIT:
   case SCR_STATUS:
@@ -1083,6 +1421,27 @@ static void activate_wifi(void) {
   }
 }
 
+static void handle_home_swipe(int delta_x, int delta_y) {
+  int horizontal = abs(delta_x);
+  int vertical = abs(delta_y);
+  if (horizontal < 48 || horizontal < vertical * 2)
+    return;
+  if (delta_x < 0)
+    s_home_page = (home_page_t)((s_home_page + 1) % HOME_PAGE_COUNT);
+  else
+    s_home_page =
+        (home_page_t)((s_home_page + HOME_PAGE_COUNT - 1) % HOME_PAGE_COUNT);
+  note_activity();
+  hermes_avatar_set_state(&s_avatar,
+                          pomodoro_running() ? HERMES_AVATAR_STATE_BUSY
+                                             : HERMES_AVATAR_STATE_IDLE,
+                          now_ms());
+  maybe_start_home_refresh(now_ms());
+  ESP_LOGI(TAG, "home swipe dx=%d dy=%d -> %s", delta_x, delta_y,
+           HOME_TITLES[s_home_page]);
+  mark_dirty();
+}
+
 /* BOOT moves the highlight. A tap activates that highlight only.
  * Never map tap x,y onto a row — the AXS15231B is not a menu hit-test. */
 static void handle_tap(uint16_t x, uint16_t y) {
@@ -1096,6 +1455,8 @@ static void handle_tap(uint16_t x, uint16_t y) {
     ESP_LOGI(TAG, "menu select %d (%s); tap=%u,%u", s_menu_index,
              MENU[s_menu_index], (unsigned)x, (unsigned)y);
     activate_menu_index(s_menu_index);
+    break;
+  case SCR_HOME:
     break;
   case SCR_GIT:
     activate_git();
@@ -1194,6 +1555,9 @@ static void ui_task(void *argument) {
   uint8_t touch_sample_count = 0;
   uint16_t touch_x = 0;
   uint16_t touch_y = 0;
+  uint16_t touch_start_x = 0;
+  uint16_t touch_start_y = 0;
+  bool touch_began_home = false;
 
   button_t boot = {.previous_level = gpio_get_level(HERMES_BOOT_PIN)};
   button_t power = {.previous_level = gpio_get_level(HERMES_PWR_PIN)};
@@ -1218,6 +1582,9 @@ static void ui_task(void *argument) {
         if (!touch_down) {
           touch_down = true;
           touch_sample_count = 0;
+          touch_start_x = tx;
+          touch_start_y = ty;
+          touch_began_home = s_screen == SCR_HOME;
         }
         if (touch_sample_count < UINT8_MAX)
           touch_sample_count++;
@@ -1228,7 +1595,11 @@ static void ui_task(void *argument) {
         if (touch_sample_count >= TOUCH_MIN_SAMPLES) {
           if (s_lock)
             xSemaphoreTake(s_lock, portMAX_DELAY);
-          handle_tap(touch_x, touch_y);
+          if (touch_began_home && s_screen == SCR_HOME)
+            handle_home_swipe((int)touch_x - (int)touch_start_x,
+                              (int)touch_y - (int)touch_start_y);
+          else if (!touch_began_home && s_screen != SCR_HOME)
+            handle_tap(touch_x, touch_y);
           if (s_lock)
             xSemaphoreGive(s_lock);
         } else
@@ -1238,10 +1609,20 @@ static void ui_task(void *argument) {
     }
 
     update_status_sample(now_ms());
+    bool pomodoro_changed = home_dashboard_tick();
     if (s_lock)
       xSemaphoreTake(s_lock, portMAX_DELAY);
     uint32_t frame_now = now_ms();
-    bool avatar_active = s_screen == SCR_MENU;
+    if (s_screen == SCR_HOME) {
+      uint32_t clock_second = frame_now / 1000U;
+      if (clock_second != s_last_home_clock_second ||
+          (s_home_page == HOME_POMODORO && pomodoro_changed)) {
+        s_last_home_clock_second = clock_second;
+        mark_dirty();
+      }
+      maybe_start_home_refresh(frame_now);
+    }
+    bool avatar_active = s_screen == SCR_MENU || s_screen == SCR_HOME;
     if (avatar_active && hermes_avatar_tick(&s_avatar, frame_now))
       mark_dirty();
     if (s_dirty) {
@@ -1264,6 +1645,7 @@ esp_err_t hermes_ui_start(void) {
   hermes_theme_apply(s_theme);
 
   ESP_ERROR_CHECK(hermes_i2c_init());
+  ESP_ERROR_CHECK(home_dashboard_init());
   ESP_ERROR_CHECK(hermes_power_hold_enable());
   ESP_ERROR_CHECK(hermes_display_init());
   hermes_display_set_brightness(s_brightness);
@@ -1273,6 +1655,7 @@ esp_err_t hermes_ui_start(void) {
     return ESP_ERR_NO_MEM;
   adc_init();
   hermes_avatar_init(&s_avatar, now_ms());
+  home_data_load_cache(&s_home_weather, &s_home_crypto, &s_home_stocks);
 
   boot_screen(false);
   esp_err_t input_err = input_init();

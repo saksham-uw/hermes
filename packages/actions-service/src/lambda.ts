@@ -4,6 +4,7 @@ import { handleActionsRequest } from "./http.js";
 import { IdempotencyStore } from "./idempotency.js";
 import { GitWorkflowService } from "./service.js";
 import { SlackClient } from "./slack.js";
+import { HomeDataService } from "./home.js";
 
 type FunctionUrlEvent = {
   rawPath?: string;
@@ -21,14 +22,15 @@ type FunctionUrlResult = {
 };
 
 let cached:
-  | { service: GitWorkflowService; deviceToken: string }
+  | { service: GitWorkflowService; deviceToken: string; home: HomeDataService }
   | undefined;
 
-function runtime(): { service: GitWorkflowService; deviceToken: string } {
+function runtime(): { service: GitWorkflowService; deviceToken: string; home: HomeDataService } {
   if (!cached) {
     const config = loadConfig();
     cached = {
       deviceToken: config.deviceToken,
+      home: new HomeDataService(),
       service: new GitWorkflowService(
         new GitHubClient(config.githubToken),
         new SlackClient(config.slackToken, config.slackDestination),
@@ -40,7 +42,7 @@ function runtime(): { service: GitWorkflowService; deviceToken: string } {
 }
 
 export async function handler(event: FunctionUrlEvent): Promise<FunctionUrlResult> {
-  const { service, deviceToken } = runtime();
+  const { service, deviceToken, home } = runtime();
   const path = event.rawPath || "/";
   const query = event.rawQueryString ? `?${event.rawQueryString}` : "";
   const body = event.isBase64Encoded
@@ -51,7 +53,7 @@ export async function handler(event: FunctionUrlEvent): Promise<FunctionUrlResul
     url: `${path}${query}`,
     headers: event.headers ?? {},
     body,
-  });
+  }, home);
   return {
     statusCode: result.status,
     headers: result.headers,
