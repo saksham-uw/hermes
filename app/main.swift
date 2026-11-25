@@ -1,9 +1,10 @@
 import AppKit
 import Sparkle
 
-private let canvas = NSColor(srgbRed: 18/255, green: 19/255, blue: 21/255, alpha: 1)
-private let border = NSColor(white: 0.21, alpha: 1)
-private let muted = NSColor(white: 0.68, alpha: 1)
+private let canvas = NSColor(srgbRed: 47/255, green: 48/255, blue: 50/255, alpha: 1)
+private let ink = NSColor(srgbRed: 0.92, green: 0.92, blue: 0.91, alpha: 1)
+private let border = NSColor(srgbRed: 0.33, green: 0.33, blue: 0.34, alpha: 1)
+private let muted = NSColor(srgbRed: 0.75, green: 0.75, blue: 0.74, alpha: 1)
 
 private func caption(_ text: String, size: CGFloat = 11, color: NSColor = muted) -> NSTextField {
     let field = NSTextField(labelWithAttributedString: NSAttributedString(string: text, attributes: [
@@ -26,7 +27,7 @@ private final class Wordmark: NSView {
         let cols = CGFloat(lines.map(\.count).max() ?? 1)
         let size = min(20, 16 * (bounds.width - 48) / max(1, cols * unit))
         let font = NSFont.monospacedSystemFont(ofSize: max(1, size), weight: .regular)
-        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.white, .ligature: 0]
+        let attributes: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: ink, .ligature: 0]
         let width = ("M" as NSString).size(withAttributes: attributes).width * cols
         let leading = ceil(font.ascender - font.descender)
         let top = bounds.midY + CGFloat(lines.count) * leading / 2
@@ -73,11 +74,11 @@ private final class Hermes: NSObject, NSApplicationDelegate {
         }
         let title = NSTextField(labelWithString: "HERMES")
         title.font = .systemFont(ofSize: 20, weight: .heavy)
-        title.textColor = .white
+        title.textColor = ink
         let divider = rule()
         let badge = caption(" DESKTOP ", color: .black)
         badge.drawsBackground = true
-        badge.backgroundColor = .white
+        badge.backgroundColor = ink
         let headerRule = rule()
         let footerRule = rule()
         let refresh = NSButton(image: NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: "Check for Updates")!, target: controller, action: #selector(SPUStandardUpdaterController.checkForUpdates(_:)))
