@@ -1,0 +1,16 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "redirects": [
+    {
+      "source": "/downloads/HERMES.zip",
+      "destination": "https://github.com/saksham-uw/hermes/releases/latest/download/HERMES.zip",
+      "permanent": false
+    },
+    {
+      "source": "/downloads/appcast.xml",
+      "destination": "https://github.com/saksham-uw/hermes/releases/latest/download/appcast.xml",
+      "permanent": false
+    }
+  ]
+}

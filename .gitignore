@@ -1,0 +1,4 @@
+/build/
+/website/downloads/
+/website/.vercel/
+.DS_Store

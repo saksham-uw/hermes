@@ -1,0 +1,26 @@
+name: Release HERMES
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: write
+concurrency:
+  group: hermes-release
+  cancel-in-progress: false
+jobs:
+  mac:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build universal app and sign update
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: scripts/build-release.sh "${GITHUB_REF_NAME#v}"
+      - name: Publish signed files together
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -eu
+          version=${GITHUB_REF_NAME#v}
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "HERMES $version" --generate-notes \
+            "build/releases/$version/HERMES.zip" "build/releases/$version/appcast.xml"

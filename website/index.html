@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#101112">
+  <meta name="description" content="Download HERMES for macOS.">
+  <title>HERMES for Mac</title>
+  <style>
+    :root { color-scheme: dark; font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100svh; background: #101112; color: #f3f2eb; display: grid; place-items: center; }
+    main { width: min(100% - 2.5rem, 58rem); }
+    .art { margin: 0; text-align: center; font-family: Menlo, Monaco, Consolas, monospace; font-size: clamp(0.29rem, 1.78vw, 1.09rem); line-height: 1.2; color: #dfebbd; }
+    section { margin-top: clamp(2.5rem, 7vw, 5rem); border-top: 1px solid #424443; padding-top: 1.4rem; display: flex; justify-content: space-between; align-items: flex-start; gap: 1rem; }
+    h1 { font-size: 1.4rem; letter-spacing: -.035em; margin: 0 0 .55rem; font-weight: 600; }
+    p { font-size: 1rem; line-height: 1.5; color: #b8bab5; margin: 0; }
+    .download { flex-shrink: 0; border-radius: .4rem; background: #e0ebc2; color: #151811; padding: .8rem 1.15rem; font-weight: 600; text-decoration: none; }
+    .download:hover { background: #edf5d5; }
+    a:focus-visible { outline: 2px solid white; outline-offset: 4px; }
+    details { margin-top: 1.7rem; font-size: .95rem; color: #b8bab5; }
+    summary { cursor: pointer; width: fit-content; }
+    details p { max-width: 39rem; margin-top: .8rem; }
+    details a { color: #dfebbd; }
+    @media(max-width: 38rem) { section { flex-direction: column; gap: 1.2rem; } }
+  </style>
+</head>
+<body>
+  <main>
+    <pre class="art" aria-hidden="true">      ___           ___           ___           ___           ___           ___     
+     /__/\         /  /\         /  /\         /__/\         /  /\         /  /\    
+     \  \:\       /  /:/_       /  /::\       |  |::\       /  /:/_       /  /:/_   
+      \__\:\     /  /:/ /\     /  /:/\:\      |  |:|:\     /  /:/ /\     /  /:/ /\  
+  ___ /  /::\   /  /:/ /:/_   /  /:/~/:/    __|__|:|\:\   /  /:/ /:/_   /  /:/ /::\ 
+ /__/\  /:/\:\ /__/:/ /:/ /\ /__/:/ /:/___ /__/::::| \:\ /__/:/ /:/ /\ /__/:/ /:/\:\
+ \  \:\/:/__\/ \  \:\/:/ /:/ \  \:\/:::::/ \  \:\~~\__\/ \  \:\/:/ /:/ \  \:\/:/~/:/
+  \  \::/       \  \::/ /:/   \  \::/~~~~   \  \:\        \  \::/ /:/   \  \::/ /:/ 
+   \  \:\        \  \:\/:/     \  \:\        \  \:\        \  \:\/:/     \__\/ /:/  
+    \  \:\        \  \::/       \  \:\        \  \:\        \  \::/        /__/:/   
+     \__\/         \__\/         \__\/         \__\/         \__\/         \__\/    </pre>
+    <section aria-labelledby="title">
+      <div>
+        <h1 id="title">HERMES for Mac</h1>
+        <p>macOS 13 or later · Apple silicon and Intel</p>
+      </div>
+      <a class="download" href="/downloads/HERMES.zip" download>Download for macOS</a>
+    </section>
+    <details>
+      <summary>Installation and first launch</summary>
+      <p>Unzip the download, drag HERMES into Applications, and open it. The first release is unnotarized. If macOS asks you to verify the developer, see <a href="https://support.apple.com/en-us/102445">Apple’s guidance on opening downloaded apps</a>.</p>
+    </details>
+  </main>
+</body>
+</html>
