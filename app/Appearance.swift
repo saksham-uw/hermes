@@ -46,43 +46,46 @@ struct ActionStyle: ButtonStyle {
     }
 }
 
-struct Workspace: View {
+private enum MainTab: String, CaseIterable {
+    case workspace = "Workspace"
+    case settings = "Settings"
+}
+
+struct HermesWindow: View {
+    @State private var tab: MainTab = .workspace
+    @State private var section: SettingsSection = .appearance
+    @AppStorage("workspace.showGrid") private var showGrid = true
+    let updatePreferences: UpdatePreferences
     @ObservedObject var updates: UpdateDriver
     let version: String
     let check: () -> Void
-    private static let artwork = Bundle.main.url(forResource: "ascii-font", withExtension: "txt")
-        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.trimmingCharacters(in: .newlines) ?? "HERMES"
 
     var body: some View {
         ZStack {
             VStack(spacing: 0) {
-                HStack(spacing: 18) {
+                HStack(spacing: 12) {
                     Text("HERMES").font(Theme.display(31)).tracking(-1.2)
                     Rectangle().fill(Theme.rule).frame(width: 1, height: 24)
-                    LabelText(text: "Desktop").foregroundColor(Theme.muted)
-                    Spacer()
+                    HStack(spacing: 0) {
+                        ForEach(MainTab.allCases, id: \.self) { item in
+                            Button { tab = item } label: { LabelText(text: item.rawValue, bold: true) }
+                                .buttonStyle(ActionStyle(primary: tab == item))
+                                .accessibilityAddTraits(tab == item ? .isSelected : [])
+                                .keyboardShortcut(item == .workspace ? "1" : ",", modifiers: .command)
+                        }
+                    }.fixedSize()
+                    Spacer(minLength: 0)
                     Button(action: check) {
-                        HStack(spacing: 8) { Image(systemName: "arrow.clockwise"); LabelText(text: "Check for updates", bold: true) }
-                    }.buttonStyle(ActionStyle())
+                        Image(systemName: "arrow.clockwise").accessibilityLabel("Check for updates")
+                    }.buttonStyle(ActionStyle()).help("Check for updates")
                 }.padding(.horizontal, 24).frame(height: 70)
                 Rectangle().fill(Theme.rule).frame(height: 1)
-                ZStack {
-                    Canvas { context, size in
-                        var dots = Path()
-                        for y in stride(from: 12, to: size.height, by: 20) {
-                            for x in stride(from: 12, to: size.width, by: 20) {
-                                dots.addRect(CGRect(x: x, y: y, width: 1, height: 1))
-                            }
-                        }
-                        context.fill(dots, with: .color(.white.opacity(0.10)))
-                    }
-                    GeometryReader { proxy in
-                        Text(verbatim: Self.artwork)
-                            .font(.custom("GeistMono-Regular", size: min(22, (proxy.size.width - 44) / 54, proxy.size.height / 17)))
-                            .fixedSize().frame(width: proxy.size.width, height: proxy.size.height)
-                            .accessibilityLabel("HERMES")
-                    }
-                }.background(Theme.surface).overlay(Rectangle().strokeBorder(Theme.rule)).padding(24)
+                switch tab {
+                case .workspace:
+                    WorkspaceCanvas(showGrid: showGrid)
+                case .settings:
+                    SettingsPage(section: $section, showGrid: $showGrid, updates: updatePreferences, version: version, check: check)
+                }
                 Rectangle().fill(Theme.rule).frame(height: 1)
                 HStack {
                     LabelText(text: "Version " + version)
@@ -122,5 +125,32 @@ struct Workspace: View {
                  .shadow(color: .black.opacity(0.3), radius: 14, y: 6).frame(maxWidth: 496).padding(.horizontal, 24)
             }
         }.foregroundColor(Theme.ink).background(Theme.canvas).preferredColorScheme(.dark)
+    }
+}
+
+private struct WorkspaceCanvas: View {
+    let showGrid: Bool
+    private static let artwork = Bundle.main.url(forResource: "ascii-font", withExtension: "txt")
+        .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.trimmingCharacters(in: .newlines) ?? "HERMES"
+
+    var body: some View {
+        ZStack {
+            Canvas { context, size in
+                guard showGrid else { return }
+                var dots = Path()
+                for y in stride(from: 12, to: size.height, by: 20) {
+                    for x in stride(from: 12, to: size.width, by: 20) {
+                        dots.addRect(CGRect(x: x, y: y, width: 1, height: 1))
+                    }
+                }
+                context.fill(dots, with: .color(.white.opacity(0.10)))
+            }
+            GeometryReader { proxy in
+                Text(verbatim: Self.artwork)
+                    .font(.custom("GeistMono-Regular", size: min(22, (proxy.size.width - 44) / 54, proxy.size.height / 17)))
+                    .fixedSize().frame(width: proxy.size.width, height: proxy.size.height)
+                    .accessibilityLabel("HERMES")
+            }
+        }.background(Theme.surface).overlay(Rectangle().strokeBorder(Theme.rule)).padding(24)
     }
 }

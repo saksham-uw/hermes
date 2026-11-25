@@ -29,7 +29,7 @@ private final class Hermes: NSObject, NSApplicationDelegate, NSMenuItemValidatio
             styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
         window.title = "HERMES"
         window.appearance = NSAppearance(named: .darkAqua)
-        let content = NSHostingView(rootView: Workspace(updates: driver, version: version, check: check))
+        let content = NSHostingView(rootView: HermesWindow(updatePreferences: UpdatePreferences(updater), updates: driver, version: version, check: check))
         content.sizingOptions = []
         window.contentView = content
         window.contentMinSize = NSSize(width: 500, height: 320)
