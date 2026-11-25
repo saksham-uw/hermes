@@ -14,6 +14,7 @@ contents="$bundle/Contents"
 mkdir -p "$contents"/{MacOS,Resources,Frameworks}
 ditto "$sparkle/Sparkle.framework" "$contents/Frameworks/Sparkle.framework"
 cp "$sparkle/LICENSE" "$contents/Resources/Sparkle-LICENSE"
+cp -R app/Fonts "$contents/Resources/"
 cp ascii-font.txt "$contents/Resources/"
 cp app/HERMES.icns "$contents/Resources/"
 public_key=$(cat app/update-public-key.txt)
@@ -39,7 +40,7 @@ cat > "$contents/Info.plist" <<PLIST
 PLIST
 for arch in arm64 x86_64; do
   xcrun swiftc -O -target "$arch-apple-macos13.0" -F "$sparkle" -framework Sparkle \
-    -Xlinker -rpath -Xlinker @executable_path/../Frameworks app/main.swift -o "$work/HERMES-$arch"
+    -Xlinker -rpath -Xlinker @executable_path/../Frameworks app/*.swift -o "$work/HERMES-$arch"
 done
 lipo -create "$work/HERMES-arm64" "$work/HERMES-x86_64" -output "$contents/MacOS/HERMES"
 codesign --force --sign - "$bundle"
