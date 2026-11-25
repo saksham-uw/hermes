@@ -15,7 +15,7 @@ mkdir -p "$contents"/{MacOS,Resources,Frameworks}
 ditto "$sparkle/Sparkle.framework" "$contents/Frameworks/Sparkle.framework"
 cp "$sparkle/LICENSE" "$contents/Resources/Sparkle-LICENSE"
 cp -R app/Fonts "$contents/Resources/"
-cp ascii-font.txt "$contents/Resources/"
+cp ascii-font.txt github.txt salck.txt "$contents/Resources/"
 cp app/HERMES.icns "$contents/Resources/"
 public_key=$(cat app/update-public-key.txt)
 cat > "$contents/Info.plist" <<PLIST

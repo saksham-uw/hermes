@@ -22,6 +22,12 @@ private final class Hermes: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         sub.addItem(withTitle: "Check for Updates…", action: #selector(check), keyEquivalent: "").target = self
         sub.addItem(.separator())
         sub.addItem(withTitle: "Quit HERMES", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+        let edit = NSMenu(title: "Edit")
+        menu.addItem(withTitle: "Edit", action: nil, keyEquivalent: "").submenu = edit
+        for (title, selector, shortcut) in [("Cut", "cut:", "x"), ("Copy", "copy:", "c"),
+                                            ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
+            edit.addItem(withTitle: title, action: NSSelectorFromString(selector), keyEquivalent: shortcut)
+        }
         NSApp.mainMenu = menu
 
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
