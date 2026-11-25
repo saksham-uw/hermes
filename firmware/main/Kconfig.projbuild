@@ -1,9 +1,0 @@
-menu "Hermes Configuration"
-
-    config HERMES_UI_CONSOLE
-        bool "Also log UI state to UART console"
-        default n
-        help
-            LCD + touch is the primary UI. Enable this for extra UART dumps.
-
-endmenu
