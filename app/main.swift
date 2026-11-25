@@ -43,6 +43,9 @@ private final class Hermes: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         controller = SPUStandardUpdaterController(startingUpdater: true, updaterDelegate: nil, userDriverDelegate: nil)
+        if controller.updater.automaticallyChecksForUpdates {
+            controller.updater.checkForUpdatesInBackground()
+        }
         let menu = NSMenu()
         let appItem = menu.addItem(withTitle: "HERMES", action: nil, keyEquivalent: "")
         let appMenu = NSMenu(title: "HERMES")

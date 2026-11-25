@@ -1,5 +1,6 @@
 name: Release HERMES
 on:
+  workflow_dispatch:
   push:
     tags: ['v*']
 permissions:
@@ -9,6 +10,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   mac:
+    if: github.ref_type == 'tag'
     runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
