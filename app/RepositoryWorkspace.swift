@@ -172,7 +172,8 @@ private struct RepoCard: View {
         .shadow(color: .black.opacity(hover ? 0.23 : 0), radius: 6, y: 4)
         .offset(y: hover && !reduceMotion ? -3 : 0)
         .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: hover)
-        .onHover { hover = $0 }
+        .background(PointerRegion(cursor: HermesPointer.hand, onHoverChange: { hover = $0 }))
+        .contentShape(Rectangle())
     }
 
     private func stat(_ count: Int?, singular: String, plural: String) -> some View {
@@ -284,7 +285,7 @@ private struct RepoDetail: View {
                         CopyText(abs(date.timeIntervalSinceNow) < 60 ? "Just now" : date.formatted(.relative(presentation: .numeric)), size: 11, muted: true, activate: toggle)
                     }
                 }.padding(.horizontal, 12).padding(.vertical, 11)
-            }
+            }.modifier(ControlHover()).disabled(state.busy)
             if active { lane(name, "main", data).id(name) }
         }.background(active ? Theme.surface : Color.clear)
     }

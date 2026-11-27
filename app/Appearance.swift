@@ -34,6 +34,29 @@ struct LabelText: View {
     }
 }
 
+// A shared hover treatment for actionable surfaces. It leaves selection,
+// keyboard activation and accessibility with the underlying button.
+struct ControlHover: ViewModifier {
+    @State private var inside = false
+    @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var onLight = false
+
+    func body(content: Content) -> some View {
+        let hover = enabled && inside
+        return content
+            .background(PointerRegion(cursor: HermesPointer.hand, onHoverChange: { inside = $0 }))
+            .overlay {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill((onLight ? Color.black : Color.white).opacity(hover ? 0.10 : 0))
+                    .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(Theme.ink.opacity(hover ? 0.30 : 0)))
+                    .allowsHitTesting(false)
+            }
+            .contentShape(Rectangle())
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.12), value: hover)
+    }
+}
+
 struct ActionStyle: ButtonStyle {
     var primary = false
     @Environment(\.isEnabled) private var isEnabled
@@ -44,8 +67,8 @@ struct ActionStyle: ButtonStyle {
             .foregroundColor(primary ? Theme.canvas : Theme.ink)
             .background(RoundedRectangle(cornerRadius: 4).fill(primary ? Theme.ink : Theme.surface))
             .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(isFocused || primary ? Theme.ink : Theme.rule))
+            .modifier(ControlHover(onLight: primary))
             .opacity(isEnabled ? (configuration.isPressed ? 0.66 : 1) : 0.45)
-            .contentShape(Rectangle())
     }
 }
 
@@ -56,7 +79,7 @@ struct TabStyle: ButtonStyle {
             .foregroundColor(selected ? Theme.ink : Theme.muted)
             .overlay(alignment: .bottom) {
                 Rectangle().fill(selected ? Theme.ink : Color.clear).frame(height: 2)
-            }.opacity(configuration.isPressed ? 0.65 : 1).contentShape(Rectangle())
+            }.modifier(ControlHover()).opacity(configuration.isPressed ? 0.65 : 1)
     }
 }
 
@@ -181,6 +204,6 @@ private struct WindowButtons: View {
         Button(action: action) {
             Text(verbatim: mark).font(.custom("GeistMono-Regular", size: 15)).frame(width: 23, height: 28)
                 .contentShape(Rectangle()).textSelection(.disabled)
-        }.buttonStyle(.plain).foregroundColor(Theme.muted).accessibilityLabel(name).help(name)
+        }.buttonStyle(.plain).modifier(ControlHover()).foregroundColor(Theme.muted).accessibilityLabel(name).help(name)
     }
 }

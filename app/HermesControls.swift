@@ -16,9 +16,13 @@ struct CopyText: NSViewRepresentable {
     final class LabelView: NSTextView {
         var activate: (() -> Void)?
         private var click: DispatchWorkItem?
-        override func resetCursorRects() {
-            super.resetCursorRects()
-            addCursorRect(visibleRect, cursor: HermesPointer.beam)
+        func containsText(at point: NSPoint) -> Bool {
+            guard let layout = layoutManager, let container = textContainer else { return false }
+            let origin = textContainerOrigin
+            let local = NSPoint(x: point.x - origin.x, y: point.y - origin.y)
+            let index = layout.glyphIndex(for: local, in: container)
+            guard index < layout.numberOfGlyphs else { return false }
+            return layout.lineFragmentUsedRect(forGlyphAt: index, effectiveRange: nil).contains(local)
         }
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) {
@@ -79,6 +83,21 @@ enum HermesPointer {
     static let arrow = NSCursor(image: drawing(beam: false), hotSpot: NSPoint(x: 3, y: 2))
     static let beam = NSCursor(image: drawing(beam: true), hotSpot: NSPoint(x: 10, y: 11))
 
+    static let hand = NSCursor(image: NSImage(size: NSSize(width: 24, height: 26), flipped: true) { _ in
+        let path = NSBezierPath()
+        let points = [NSPoint(x: 7, y: 13), .init(x: 7, y: 3), .init(x: 9, y: 1.5), .init(x: 11, y: 3),
+                      .init(x: 11, y: 10), .init(x: 13, y: 8), .init(x: 15, y: 9.5),
+                      .init(x: 17, y: 9), .init(x: 20, y: 11), .init(x: 22, y: 13),
+                      .init(x: 21, y: 19), .init(x: 18, y: 24), .init(x: 10, y: 24),
+                      .init(x: 3, y: 16), .init(x: 2, y: 13), .init(x: 4, y: 12)]
+        path.move(to: points[0])
+        for point in points.dropFirst() { path.line(to: point) }
+        path.close()
+        NSColor(white: 0.15, alpha: 1).setStroke(); path.lineWidth = 2.5; path.lineJoinStyle = .round; path.stroke()
+        NSColor(white: 0.93, alpha: 1).setFill(); path.fill()
+        return true
+    }, hotSpot: NSPoint(x: 9, y: 2))
+
     private static func drawing(beam: Bool) -> NSImage {
         NSImage(size: NSSize(width: 23, height: 25), flipped: true) { _ in
             let path = NSBezierPath()
@@ -101,19 +120,104 @@ enum HermesPointer {
     }
 }
 
+// SwiftUI buttons share a single AppKit hosting view. Register their actual
+// visible bounds without adding a mouse or accessibility target over the control.
+struct PointerRegion: NSViewRepresentable {
+    let cursor: NSCursor
+    var onHoverChange: ((Bool) -> Void)? = nil
+    @Environment(\.isEnabled) private var enabled
+    final class Region: NSView {
+        var cursor = HermesPointer.hand
+        var onHoverChange: ((Bool) -> Void)?
+        weak var owner: HermesAppWindow?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            owner?.regions.remove(self)
+            owner = window as? HermesAppWindow
+            owner?.regions.add(self)
+        }
+    }
+    func makeNSView(context: Context) -> Region {
+        let region = Region()
+        region.setAccessibilityElement(false)
+        return region
+    }
+    func updateNSView(_ view: Region, context: Context) {
+        view.onHoverChange = onHoverChange
+        view.cursor = cursor
+        view.isHidden = !enabled
+    }
+}
+
 final class HermesAppWindow: NSWindow {
+    fileprivate let regions = NSHashTable<PointerRegion.Region>.weakObjects()
+
+    private weak var hovered: PointerRegion.Region?
+
+    private func setHovered(_ region: PointerRegion.Region?) {
+        guard hovered !== region else { return }
+        let previous = hovered
+        hovered = region
+        previous?.onHoverChange?(false)
+        region?.onHoverChange?(true)
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        setHovered(nil)
+    }
+
+    private func applyPointer(at location: NSPoint) -> Bool {
+        guard isKeyWindow, let root = contentView,
+              root.bounds.insetBy(dx: 4, dy: 4).contains(root.convert(location, from: nil)) else {
+            setHovered(nil)
+            return false
+        }
+        let region = regions.allObjects.first { view in
+            !view.isHiddenOrHasHiddenAncestor && view.bounds.intersection(view.visibleRect).contains(view.convert(location, from: nil))
+        }
+        setHovered(region)
+        let hit = root.hitTest(root.superview?.convert(location, from: nil) ?? location)
+        let cursor: NSCursor
+        if let label = hit as? CopyText.LabelView, label.containsText(at: label.convert(location, from: nil)) {
+            cursor = HermesPointer.beam
+        } else if let field = hit as? NSTextField, field.isEnabled && (field.isEditable || field.isSelectable) {
+            cursor = HermesPointer.beam
+        } else if let text = hit as? NSTextView, !(text is CopyText.LabelView), text.isEditable || text.isSelectable {
+            cursor = HermesPointer.beam
+        } else {
+            cursor = region?.cursor ?? HermesPointer.arrow
+        }
+        if NSCursor.current != cursor { cursor.set() }
+        return true
+    }
+
     override func sendEvent(_ event: NSEvent) {
+        // Handle AppKit's cursor update directly so it cannot flash its own
+        // cursor between two HERMES targets.
+        if event.type == .cursorUpdate, applyPointer(at: mouseLocationOutsideOfEventStream) { return }
         super.sendEvent(event)
         switch event.type {
-        case .mouseMoved, .mouseEntered, .cursorUpdate, .leftMouseUp, .leftMouseDragged:
-            guard isKeyWindow, let root = contentView else { return }
-            let point = root.convert(event.locationInWindow, from: nil)
-            guard root.bounds.insetBy(dx: 4, dy: 4).contains(point) else { return }
-            let hit = root.hitTest(root.superview?.convert(event.locationInWindow, from: nil) ?? event.locationInWindow)
-            let isText = hit is NSTextView || hit is NSTextField || NSCursor.current == .iBeam
-            (isText ? HermesPointer.beam : HermesPointer.arrow).set()
+        case .mouseExited:
+            // Exit messages also occur between descendants of the same window.
+            _ = applyPointer(at: mouseLocationOutsideOfEventStream)
+        case .mouseMoved, .mouseEntered, .leftMouseUp, .leftMouseDragged, .scrollWheel:
+            _ = applyPointer(at: event.locationInWindow)
         default: break
         }
+    }
+
+    override func update() {
+        super.update()
+        // Scrolling, layout changes and disclosures can move a target under a stationary pointer.
+        let screenPoint = NSEvent.mouseLocation
+        guard isKeyWindow, frame.contains(screenPoint),
+              NSWindow.windowNumber(at: screenPoint, belowWindowWithWindowNumber: 0) == windowNumber else {
+            setHovered(nil)
+            return
+        }
+        _ = applyPointer(at: mouseLocationOutsideOfEventStream)
     }
 }
 
@@ -136,8 +240,9 @@ struct HermesField: View {
     init(_ placeholder: String, text: Binding<String>) { self.placeholder = placeholder; _text = text }
     var body: some View {
         TextField(placeholder, text: $text).textFieldStyle(.plain).focused($focused)
-            .font(.custom("Inter-Regular", size: 14)).padding(10).background(Theme.canvas)
-            .overlay(Rectangle().strokeBorder(focused ? Theme.ink : Theme.rule))
+            .font(.custom("Inter-Regular", size: 14)).padding(10).background(Theme.canvas.onTapGesture { focused = true })
+            .background(PointerRegion(cursor: HermesPointer.beam))
+            .overlay(Rectangle().strokeBorder(focused ? Theme.ink : Theme.rule).allowsHitTesting(false))
             .accessibilityLabel(placeholder)
     }
 }

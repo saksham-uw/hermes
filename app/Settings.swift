@@ -22,8 +22,6 @@ enum SettingsSection: String, CaseIterable {
     case connectors = "Connectors"
     case workflow = "Workflow defaults"
     case updates = "Updates"
-
-
 }
 
 struct HermesToggleStyle: ToggleStyle {
@@ -46,9 +44,9 @@ struct HermesToggleStyle: ToggleStyle {
                 .overlay(Rectangle().strokeBorder(configuration.isOn ? Theme.ink : Theme.muted))
                 .accessibilityHidden(true)
             }
-            .contentShape(Rectangle())
+            .contentShape(Rectangle()).textSelection(.disabled)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.plain).modifier(ControlHover())
         .accessibilityRepresentation {
             Toggle(isOn: configuration.$isOn) { configuration.label }
                 .toggleStyle(.switch)
@@ -65,22 +63,29 @@ struct SettingsPage: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            VStack(alignment: .leading, spacing: 4) {
-                LabelText(text: "Settings").foregroundColor(Theme.muted).padding(.bottom, 14)
+            VStack(alignment: .leading, spacing: 5) {
+                LabelText(text: "Settings").foregroundColor(Theme.muted)
+                    .padding(.leading, 12).padding(.bottom, 10)
                 ForEach(SettingsSection.allCases, id: \.self) { item in
+                    let selected = item == section
                     Button { section = item } label: {
-                        HStack(spacing: 9) {
-                            Rectangle().fill(item == section ? Theme.canvas : Theme.rule).frame(width: 2, height: 12)
-                            Text(item.rawValue).font(.custom("Inter-Regular", size: 14)).fixedSize()
-                            Spacer(minLength: 0)
-                        }.padding(10).contentShape(Rectangle()).textSelection(.disabled)
-                    }.buttonStyle(.plain)
-                     .foregroundColor(item == section ? Theme.canvas : Theme.ink)
-                     .background(item == section ? Theme.ink : Color.clear)
-                     .accessibilityAddTraits(item == section ? .isSelected : [])
+                        HStack(spacing: 10) {
+                            SettingsGlyph(section: item).frame(width: 17, height: 17)
+                            Text(item.rawValue).font(.custom(selected ? "Inter-SemiBold" : "Inter-Regular", size: 13))
+                                .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(.horizontal, 12).frame(height: 38)
+                        .foregroundColor(selected ? Theme.ink : Theme.muted)
+                        .background(RoundedRectangle(cornerRadius: 4).fill(selected ? Color(white: 0.215) : Color.clear))
+                        .overlay(alignment: .leading) {
+                            Rectangle().fill(selected ? Theme.ink : Color.clear).frame(width: 2, height: 17)
+                        }.textSelection(.disabled).contentShape(Rectangle())
+                    }.buttonStyle(.plain).modifier(ControlHover())
+                     .accessibilityAddTraits(selected ? .isSelected : [])
                 }
-                Spacer()
-            }.padding(16).frame(width: 175)
+                Spacer(minLength: 0)
+            }.padding(.horizontal, 10).padding(.vertical, 22).frame(width: 182)
+             .background(Color(white: 0.145))
             Rectangle().fill(Theme.rule).frame(width: 1)
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
@@ -113,5 +118,40 @@ struct SettingsPage: View {
             Text(detail).font(.custom("Inter-Regular", size: 14)).foregroundColor(Theme.muted)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+}
+
+// Small line icons share a 16-point grid and the foreground of their row.
+private struct SettingsGlyph: View {
+    let section: SettingsSection
+    var body: some View {
+        Canvas { context, size in
+            context.scaleBy(x: size.width / 16, y: size.height / 16)
+            var path = Path()
+            func line(_ x: CGFloat, _ y: CGFloat, _ u: CGFloat, _ v: CGFloat) {
+                path.move(to: CGPoint(x: x, y: y))
+                path.addLine(to: CGPoint(x: u, y: v))
+            }
+            switch section {
+            case .appearance:
+                path.addEllipse(in: CGRect(x: 2, y: 2, width: 12, height: 12))
+                var half = Path()
+                half.addArc(center: CGPoint(x: 8, y: 8), radius: 5.5, startAngle: .degrees(90), endAngle: .degrees(270), clockwise: false)
+                half.closeSubpath()
+                context.fill(half, with: .foreground)
+            case .connectors:
+                path.addRoundedRect(in: CGRect(x: 1.5, y: 6.5, width: 8, height: 7), cornerSize: CGSize(width: 2, height: 2))
+                path.addRoundedRect(in: CGRect(x: 6.5, y: 2.5, width: 8, height: 7), cornerSize: CGSize(width: 2, height: 2))
+            case .workflow:
+                for (y, x) in [(4.0, 6.0), (8.0, 10.0), (12.0, 5.0)] {
+                    line(2, y, x - 2, y); line(x + 2, y, 14, y)
+                    path.addEllipse(in: CGRect(x: x - 1.5, y: y - 1.5, width: 3, height: 3))
+                }
+            case .updates:
+                path.addArc(center: CGPoint(x: 8, y: 8), radius: 5.5, startAngle: .degrees(-45), endAngle: .degrees(255), clockwise: false)
+                line(12.4, 1.7, 12.4, 5.2); line(12.4, 5.2, 8.9, 5.2)
+            }
+            context.stroke(path, with: .foreground, style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+        }.accessibilityHidden(true)
     }
 }
