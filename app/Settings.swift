@@ -72,7 +72,7 @@ struct SettingsPage: View {
                         HStack(spacing: 10) {
                             SettingsGlyph(section: item).frame(width: 17, height: 17)
                             Text(item.rawValue).font(.custom(selected ? "Inter-SemiBold" : "Inter-Regular", size: 13))
-                                .lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                .lineLimit(1).minimumScaleFactor(0.9).frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .padding(.horizontal, 12).frame(height: 38)
                         .foregroundColor(selected ? Theme.ink : Theme.muted)
@@ -84,7 +84,7 @@ struct SettingsPage: View {
                      .accessibilityAddTraits(selected ? .isSelected : [])
                 }
                 Spacer(minLength: 0)
-            }.padding(.horizontal, 10).padding(.vertical, 22).frame(width: 182)
+            }.padding(.horizontal, 10).padding(.vertical, 22).frame(width: 196)
              .background(Color(white: 0.145))
             Rectangle().fill(Theme.rule).frame(width: 1)
             ScrollView {
