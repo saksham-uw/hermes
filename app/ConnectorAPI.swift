@@ -10,7 +10,8 @@ struct Connection: Codable {
     let scope: String // Slack workspace name or GitHub organization
     let scopeID: String
     let repos: [String]
-    let token: String
+    var token: String
+    var grant: OAuthGrant? = nil
 }
 
 struct ConnectorError: LocalizedError {
@@ -38,7 +39,7 @@ struct BranchInfo: Decodable {
 }
 
 struct ConnectorAPI {
-    private static let liveSession: URLSession = {
+    static let liveSession: URLSession = {
         let config = URLSessionConfiguration.ephemeral
         config.httpCookieStorage = nil
         config.urlCredentialStorage = nil
@@ -90,28 +91,67 @@ struct ConnectorAPI {
         guard channel.range(of: "^[CGD][A-Z0-9]+$", options: .regularExpression) != nil, !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw ConnectorError("Enter a channel ID and a message.")
         }
-        _ = try await call(.slack, "chat.postMessage", token: connection.token, method: "POST", body: ["channel": channel, "text": message])
+        _ = try await call(.slack, "chat.postMessage", token: try await OAuthCredentials.shared.token(.slack, connection), method: "POST", body: ["channel": channel, "text": message])
     }
 
     private func validName(_ name: String) -> Bool {
         name != "." && name != ".." && name.range(of: "^[A-Za-z0-9_.-]+$", options: .regularExpression) != nil
     }
 
-    func connectGitHub(token: String, org: String, repos: [String]) async throws -> Connection {
-        guard token.hasPrefix("github_pat_") else { throw ConnectorError("Use a fine-grained GitHub personal access token.") }
-        guard validName(org), !repos.isEmpty, repos.allSatisfy(validName) else { throw ConnectorError("Enter one organization and repository names without the owner prefix.") }
-        struct User: Decodable { let login: String }
-        struct Repo: Decodable { struct Owner: Decodable { let type: String }; let name: String; let full_name: String; let owner: Owner }
-        let (data, _) = try await call(.github, "user", token: token)
-        let user = try JSONDecoder().decode(User.self, from: data)
-        var verified = [String]()
-        for repo in Set(repos.map { $0.lowercased() }).sorted() {
-            let (data, _) = try await call(.github, "repos/\(org)/\(repo)", token: token)
-            let found = try JSONDecoder().decode(Repo.self, from: data)
-            guard found.owner.type == "Organization", found.full_name.lowercased() == "\(org)/\(repo)".lowercased() else { throw ConnectorError("Choose a repository owned by the specified organization.") }
-            verified.append(found.name)
+    struct Installation: Decodable, Identifiable {
+        struct Account: Decodable { let login: String; let type: String }
+        let id: Int; let account: Account
+    }
+
+    func installations(_ token: String) async throws -> [Installation] {
+        struct Page: Decodable { let installations: [Installation] }
+        var all: [Installation] = [], page = 1
+        while true {
+            let (data, _) = try await call(.github, "user/installations?per_page=100&page=\(page)", token: token)
+            let rows = try JSONDecoder().decode(Page.self, from: data).installations
+            all += rows.filter { $0.account.type == "Organization" }
+            if rows.count < 100 { return all }
+            page += 1
         }
-        return Connection(user: user.login, scope: org, scopeID: org, repos: verified, token: token)
+    }
+
+    func repositories(_ installation: Installation, token: String) async throws -> [String] {
+        struct Repo: Decodable { let name: String; let full_name: String }
+        struct Page: Decodable { let repositories: [Repo] }
+        var names: [String] = [], page = 1
+        while true {
+            let (data, _) = try await call(.github, "user/installations/\(installation.id)/repositories?per_page=100&page=\(page)", token: token)
+            let rows = try JSONDecoder().decode(Page.self, from: data).repositories
+            names += rows.filter { validName($0.name) && $0.full_name.lowercased() == "\(installation.account.login)/\($0.name)".lowercased() }.map(\.name)
+            if rows.count < 100 { return names.sorted() }
+            page += 1
+        }
+    }
+
+    func githubUser(_ token: String) async throws -> String {
+        struct User: Decodable { let login: String }
+        let (data, _) = try await call(.github, "user", token: token)
+        return try JSONDecoder().decode(User.self, from: data).login
+    }
+
+    struct Channel: Decodable, Identifiable { let id: String; let name: String; let is_archived: Bool }
+    func channels(_ c: Connection) async throws -> [Channel] {
+        struct Page: Decodable {
+            struct Metadata: Decodable { let next_cursor: String? }
+            let channels: [Channel]; let response_metadata: Metadata?
+        }
+        var rows: [Channel] = [], cursor = ""
+        repeat {
+            var parts = URLComponents()
+            parts.queryItems = [.init(name: "types", value: "public_channel,private_channel"), .init(name: "exclude_archived", value: "true"),
+                                .init(name: "limit", value: "200"), .init(name: "cursor", value: cursor)]
+            let path = "users.conversations?" + (parts.percentEncodedQuery ?? "")
+            let (data, _) = try await call(.slack, path, token: try await OAuthCredentials.shared.token(.slack, c))
+            let page = try JSONDecoder().decode(Page.self, from: data)
+            rows += page.channels.filter { !$0.is_archived }
+            cursor = page.response_metadata?.next_cursor ?? ""
+        } while !cursor.isEmpty
+        return rows.sorted { $0.name < $1.name }
     }
 
     private func repoPath(_ repo: String, _ c: Connection) throws -> String {
@@ -142,7 +182,7 @@ struct ConnectorAPI {
             try Task.checkCancellation()
             var vars = ["org": c.scopeID, "repo": repo]
             vars["after"] = cursor
-            let (data, _) = try await call(.github, "graphql", token: c.token, method: "POST", body: ["query": query, "variables": vars])
+            let (data, _) = try await call(.github, "graphql", token: try await OAuthCredentials.shared.token(.github, c), method: "POST", body: ["query": query, "variables": vars])
             let r = try JSONDecoder().decode(Result.self, from: data)
             guard r.errors == nil, let page = r.data?.repository?.refs else { throw ConnectorError(r.errors?.first?.message ?? "GitHub could not list branches.") }
             branches += page.nodes
@@ -155,7 +195,7 @@ struct ConnectorAPI {
         let path = try repoPath(repo, c)
         var result = [Pull](), page = 1
         while true {
-            let (data, _) = try await call(.github, "\(path)/pulls?state=open&per_page=100&page=\(page)", token: c.token)
+            let (data, _) = try await call(.github, "\(path)/pulls?state=open&per_page=100&page=\(page)", token: try await OAuthCredentials.shared.token(.github, c))
             let batch = try JSONDecoder().decode([Pull].self, from: data)
             result += batch
             if batch.count < 100 { return result }
@@ -165,18 +205,18 @@ struct ConnectorAPI {
 
     func createPull(repo: String, head: String, base: String, title: String, connection c: Connection) async throws -> Pull {
         let path = try repoPath(repo, c)
-        let (data, _) = try await call(.github, path + "/pulls", token: c.token, method: "POST", body: ["head": head, "base": base, "title": title])
+        let (data, _) = try await call(.github, path + "/pulls", token: try await OAuthCredentials.shared.token(.github, c), method: "POST", body: ["head": head, "base": base, "title": title])
         return try JSONDecoder().decode(Pull.self, from: data)
     }
 
     func requestReview(repo: String, pull: Pull, users: [String], connection c: Connection) async throws {
         let path = try repoPath(repo, c)
-        _ = try await call(.github, "\(path)/pulls/\(pull.number)/requested_reviewers", token: c.token, method: "POST", body: ["reviewers": users])
+        _ = try await call(.github, "\(path)/pulls/\(pull.number)/requested_reviewers", token: try await OAuthCredentials.shared.token(.github, c), method: "POST", body: ["reviewers": users])
     }
 
     func merge(repo: String, pull: Pull, method: String, connection c: Connection) async throws {
         let path = try repoPath(repo, c)
-        let (data, _) = try await call(.github, "\(path)/pulls/\(pull.number)/merge", token: c.token, method: "PUT", body: ["sha": pull.head.sha, "merge_method": method])
+        let (data, _) = try await call(.github, "\(path)/pulls/\(pull.number)/merge", token: try await OAuthCredentials.shared.token(.github, c), method: "PUT", body: ["sha": pull.head.sha, "merge_method": method])
         struct Result: Decodable { let merged: Bool; let message: String }
         let r = try JSONDecoder().decode(Result.self, from: data)
         guard r.merged else { throw ConnectorError(r.message) }

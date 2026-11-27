@@ -1,0 +1,7 @@
+{
+  "display_information": {"name": "HERMES", "description": "Send Slack messages from HERMES for Mac."},
+  "oauth_config": {
+    "redirect_urls": ["https://hermes-mac-saksham.vercel.app/auth/slack/callback"],
+    "scopes": {"user": ["chat:write", "channels:read", "groups:read"]}
+  }
+}

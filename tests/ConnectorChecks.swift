@@ -1,6 +1,6 @@
 import Foundation
 
-/// Run on macOS: swiftc app/ConnectorAPI.swift app/ConnectionStore.swift tests/ConnectorChecks.swift -o /tmp/hermes-connector-checks && /tmp/hermes-connector-checks
+/// Run on macOS: swiftc app/ConnectorAPI.swift app/ConnectionStore.swift app/OAuthCredentials.swift tests/ConnectorChecks.swift -o /tmp/hermes-connector-checks && /tmp/hermes-connector-checks
 private final class Stub: URLProtocol, @unchecked Sendable {
     static var calls = 0
     override class func canInit(with request: URLRequest) -> Bool { true }
@@ -35,7 +35,12 @@ private final class Stub: URLProtocol, @unchecked Sendable {
             precondition(body["channel"] as? String == "C123" && body["text"] as? String == "hello" && body["username"] == nil)
             payload = ["ok": true]
         case ("GET", "/user"): payload = ["login": "test-user"]
-        case ("GET", "/repos/demo/project"): payload = ["owner": ["type": "Organization"], "name": "project", "full_name": "demo/project"]
+        case ("GET", "/user/installations"):
+            payload = ["installations": [["id": 42, "account": ["type":"Organization","login":"demo"]], ["id":43,"account":["type":"User","login":"other"]]]]
+        case ("GET", "/user/installations/42/repositories"):
+            payload = ["repositories":[["name":"project","full_name":"demo/project"],["name":"outside","full_name":"other/outside"]]]
+        case ("GET", "/api/users.conversations"):
+            payload = ["ok": true, "channels":[["id":"C123","name":"general","is_archived":false]]]
         case ("POST", "/graphql"):
             let vars = body["variables"] as! [String: String]
             precondition(vars["repo"] == "project" && vars["org"] == "demo")
@@ -73,7 +78,14 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         do { _ = try await api.connectSlack(token: "xoxp-test", workspace: "T999"); fatalError("Accepted different workspace") } catch is ConnectorError {}
         let slack = try await api.connectSlack(token: "xoxp-test", workspace: "T123")
         try await api.send("hello", channel: "C123", using: slack)
-        let github = try await api.connectGitHub(token: "github_pat_test", org: "demo", repos: ["project", "Project"])
+        let channels = try await api.channels(slack)
+        precondition(channels.map(\.id) == ["C123"])
+        let token = "github_pat_test"
+        let installs = try await api.installations(token)
+        precondition(installs.map(\.id) == [42])
+        let repos = try await api.repositories(installs[0], token: token)
+        precondition(repos == ["project"])
+        let github = Connection(user: try await api.githubUser(token), scope: "demo", scopeID: "demo", repos: repos, token: token)
         let previous = Stub.calls
         do { _ = try await api.openPulls("another", github); fatalError("Accepted unselected repo") } catch is ConnectorError {}
         precondition(previous == Stub.calls)

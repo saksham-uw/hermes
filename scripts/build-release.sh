@@ -25,6 +25,7 @@ cat > "$contents/Info.plist" <<PLIST
 <key>CFBundleIdentifier</key><string>com.sakshamuw.hermes</string>
 <key>CFBundleExecutable</key><string>HERMES</string>
 <key>CFBundleIconFile</key><string>HERMES</string>
+<key>CFBundleURLTypes</key><array><dict><key>CFBundleURLSchemes</key><array><string>com.sakshamuw.hermes.auth</string></array></dict></array>
 <key>CFBundleName</key><string>HERMES</string>
 <key>CFBundleShortVersionString</key><string>$version</string>
 <key>CFBundleVersion</key><string>$version</string>

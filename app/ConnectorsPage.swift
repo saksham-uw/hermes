@@ -65,9 +65,13 @@ private struct ConnectorSheet: View {
     @State var connection: Connection?
     let persist: (Connection?) throws -> Void
     @Environment(\.dismiss) var dismiss
-    @State private var token = ""
-    @State private var scope = ""
-    @State private var repositories = ""
+    @State private var pending: TokenResponse?
+    @State private var installations: [ConnectorAPI.Installation] = []
+    @State private var installation: Int?
+    @State private var repositories: [String] = []
+    @State private var chosen = Set<String>()
+    @State private var channels: [ConnectorAPI.Channel] = []
+    @State private var choosingAccount = false
     @State private var channel = ""
     @State private var message = ""
     @State private var busy = false
@@ -86,11 +90,19 @@ private struct ConnectorSheet: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    if let c = connection {
+                    if let c = connection, !choosingAccount {
                         LabelText(text: "Connected as")
                         Text("\(c.user) · \(c.scope)").font(Theme.display(18))
                         if service == .slack {
-                            TextField("Channel ID (e.g. C0123456789)", text: $channel)
+                            if c.grant != nil {
+                                Picker("Channel", selection: $channel) {
+                                    Text("Choose a channel").tag("")
+                                    ForEach(channels) { Text("#" + $0.name).tag($0.id) }
+                                }
+                                actionButton("Reload channels") { loadChannels(c) }
+                            } else {
+                                TextField("Channel ID", text: $channel)
+                            }
                             TextField("Message", text: $message, axis: .vertical).lineLimit(2...5)
                             actionButton("Send as " + c.user, primary: true) {
                                 run {
@@ -102,31 +114,37 @@ private struct ConnectorSheet: View {
                             RepositoryTools(connection: c, busy: $busy).id(c.scopeID)
                         }
                         Divider()
+                        actionButton("Reconnect account") { choosingAccount = true; signIn() }
                         actionButton("Disconnect") { confirmForget = true }
                     } else {
-                        if service == .slack {
-                            Text("Create the HERMES Slack app in the workspace you want. Under OAuth & Permissions, install it and copy its User OAuth Token.")
-                            Link("Set up in Slack", destination: slackSetupURL)
-                            TextField("Workspace ID (T… in your Slack web URL)", text: $scope)
-                        } else {
-                            Text("Choose your organization as the token’s resource owner and select only the repositories HERMES should access. Grant Contents and Pull requests read and write access.")
-                            TextField("Organization login", text: $scope)
-                            Link("Create a fine-grained token on GitHub", destination: githubSetupURL)
-                            TextField("Repository names, separated by commas", text: $repositories)
-                        }
-                        SecureField(service == .slack ? "User OAuth token" : "Fine-grained personal access token", text: $token)
-                        Text("Stored in this Mac’s Keychain.").foregroundColor(Theme.muted)
-                        actionButton("Verify and connect", primary: true) {
-                            run {
-                                let credential = token.trimmingCharacters(in: .whitespacesAndNewlines)
-                                let target = scope.trimmingCharacters(in: .whitespacesAndNewlines)
-                                let c: Connection
-                                if service == .slack { c = try await api.connectSlack(token: credential, workspace: target) }
-                                else { c = try await api.connectGitHub(token: credential, org: target, repos: entries(repositories)) }
-                                try persist(c)
-                                connection = c; token = ""; notice = ""
+                        if let grant = pending, service == .github {
+                            Text("Choose the organization and repositories to use in HERMES.")
+                            if let url = grant.install { Link("Choose or approve repositories on GitHub", destination: url) }
+                            actionButton("Reload organizations") { run { try await discover(grant) } }
+                            ForEach(installations) { item in
+                                actionButton(item.account.login, primary: installation == item.id) {
+                                    run { try await select(item, grant) }
+                                }
                             }
-                        }.disabled(token.isEmpty || scope.isEmpty || (service == .github && entries(repositories).isEmpty))
+                            if installations.isEmpty { Text("Install HERMES in your organization, then reload organizations here. An organization owner may need to approve it.") }
+                            ForEach(repositories, id: \.self) { repo in
+                                Toggle(repo, isOn: Binding(get: { chosen.contains(repo) }, set: { enabled in
+                                    if enabled { chosen.insert(repo) } else { chosen.remove(repo) }
+                                }))
+                            }
+                            actionButton("Connect repositories", primary: true) {
+                                run {
+                                    guard let item = installations.first(where: { $0.id == installation }) else { return }
+                                    let user = try await api.githubUser(grant.token)
+                                    let c = Connection(user: user, scope: item.account.login, scopeID: item.account.login,
+                                                       repos: chosen.sorted(), token: grant.token, grant: grant.grant)
+                                    try save(c)
+                                }
+                            }.disabled(chosen.isEmpty)
+                        } else {
+                            Text("Approve HERMES on " + service.rawValue + " to continue.")
+                            actionButton("Authorize with " + service.rawValue, primary: true) { signIn() }
+                        }
                     }
                     if busy { ProgressView().controlSize(.small) }
                     if !notice.isEmpty { Text(notice) }
@@ -137,6 +155,10 @@ private struct ConnectorSheet: View {
         }.frame(minWidth: 420, idealWidth: 500, minHeight: 300, idealHeight: 470)
          .background(Theme.canvas).foregroundColor(Theme.ink).tint(Theme.ink)
          .interactiveDismissDisabled(busy)
+         .onAppear {
+            if connection == nil { signIn() }
+            else if let c = connection, service == .slack, c.grant != nil { loadChannels(c) }
+         }
          .alert("Disconnect \(service.rawValue) from HERMES?", isPresented: $confirmForget) {
             Button("Cancel", role: .cancel) {}
             Button("Disconnect", role: .destructive) {
@@ -145,18 +167,42 @@ private struct ConnectorSheet: View {
          } message: { Text("This removes the credential from this Mac. You can separately revoke the token in \(service.rawValue).") }
     }
 
-    private var slackSetupURL: URL {
-        var u = URLComponents(string: "https://api.slack.com/apps")!
-        let manifest = #"{"display_information":{"name":"HERMES"},"oauth_config":{"scopes":{"user":["chat:write"]}}}"#
-        u.queryItems = [.init(name: "new_app", value: "1"), .init(name: "manifest_json", value: manifest)]
-        return u.url!
+    private func save(_ c: Connection) throws {
+        try persist(c)
+        connection = c; choosingAccount = false; pending = nil; notice = ""
+        channel = ""; channels = []
     }
 
-    private var githubSetupURL: URL {
-        var u = URLComponents(string: "https://github.com/settings/personal-access-tokens/new")!
-        u.queryItems = [.init(name: "name", value: "HERMES"), .init(name: "contents", value: "write"),
-                        .init(name: "pull_requests", value: "write"), .init(name: "target_name", value: scope)]
-        return u.url!
+    private func loadChannels(_ c: Connection) {
+        run { channels = try await api.channels(c) }
+    }
+
+    private func select(_ item: ConnectorAPI.Installation, _ grant: TokenResponse) async throws {
+        installation = nil; repositories = []; chosen = []
+        repositories = try await api.repositories(item, token: grant.token)
+        installation = item.id
+    }
+
+    private func discover(_ grant: TokenResponse) async throws {
+        installation = nil; repositories = []; chosen = []
+        installations = try await api.installations(grant.token)
+        if installations.count == 1 { try await select(installations[0], grant) }
+    }
+
+    private func signIn() {
+        run {
+            let grant = try await BrowserAuthorization().authorize(service)
+            if service == .slack {
+                guard let team = grant.workspace else { throw ConnectorError("Slack did not return a workspace.") }
+                var c = try await api.connectSlack(token: grant.token, workspace: team)
+                c.grant = grant.grant
+                try save(c)
+                channels = try await api.channels(c)
+            } else {
+                pending = grant
+                try await discover(grant)
+            }
+        }
     }
 
     private func run(_ work: @escaping @MainActor () async throws -> Void) {

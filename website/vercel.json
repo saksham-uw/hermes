@@ -12,5 +12,15 @@
       "destination": "https://github.com/saksham-uw/hermes/releases/latest/download/appcast.xml",
       "permanent": false
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/auth/github/callback",
+      "destination": "/api/oauth?provider=github&action=callback"
+    },
+    {
+      "source": "/auth/slack/callback",
+      "destination": "/api/oauth?provider=slack&action=callback"
+    }
   ]
 }
