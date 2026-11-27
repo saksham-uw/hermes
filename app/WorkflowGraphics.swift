@@ -161,39 +161,39 @@ private extension PullReadiness.Merge {
     }
 }
 
+enum MergeAction { case ready, manual }
+
 struct PullStatusLine: View {
     let repo: String
     let github: Connection
     let pull: Pull
     let api: ConnectorAPI
     let expanded: Bool
+    let merge: (MergeAction) -> Void
+    @State private var confirmation: MergeAction?
     @State private var readiness: PullReadiness?
     @State private var readinessError: String?
     @State private var checks: CheckCounts?
     @State private var checksError: String?
 
     var body: some View {
+        let primary = readiness?.readyForPrimaryMerge(checks: checks) == true
         VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 10) {
-                ChecksMeter(counts: checks, error: checksError)
-                Rectangle().fill(Theme.rule).frame(width: 1, height: 14)
-                if let readiness {
-                    HStack(spacing: 4) {
-                        readiness.review.mark.icon()
-                        Text(readiness.review.rawValue)
-                    }.help("Review: " + readiness.review.rawValue)
-                     .accessibilityElement(children: .ignore).accessibilityLabel("Review: " + readiness.review.rawValue)
-                    let (mark, label) = readiness.merge.appearance
-                    HStack(spacing: 4) {
-                        mark.icon()
-                        Text(label)
-                    }.help(readiness.merge.rawValue)
-                     .accessibilityElement(children: .ignore).accessibilityLabel(readiness.merge.rawValue)
-                } else {
-                    WorkflowMark.clock.icon()
-                    Text(readinessError == nil ? "Loading" : "Status unavailable")
+            if let action = confirmation, let base = pull.base?.ref {
+                Text("Merge #\(pull.number) into \(base)?").foregroundColor(Theme.ink)
+                HStack(spacing: 6) {
+                    actionButton("Cancel") { confirmation = nil }
+                    actionButton("Confirm merge", primary: true) {
+                        confirmation = nil
+                        merge(action)
+                    }
                 }
-            }.font(.custom("GeistMono-Regular", size: 11))
+            } else {
+                status(primary: primary)
+                if !primary, let base = pull.base?.ref, expanded || base == "prod" {
+                    actionButton("Merge into " + base) { confirmation = .manual }
+                }
+            }
             if expanded {
                 if let readiness { Text(readiness.merge.rawValue) }
                 if let readinessError { Text(readinessError) }
@@ -212,5 +212,35 @@ struct PullStatusLine: View {
                  if !Task.isCancelled { checks = result }
              } catch { if !Task.isCancelled { checksError = error.localizedDescription } }
          }
+    }
+
+    private func status(primary: Bool) -> some View {
+        HStack(spacing: 10) {
+            ChecksMeter(counts: checks, error: checksError)
+            Rectangle().fill(Theme.rule).frame(width: 1, height: 14)
+            if let readiness {
+                HStack(spacing: 4) {
+                    readiness.review.mark.icon()
+                    Text(readiness.review.rawValue)
+                }.help("Review: " + readiness.review.rawValue)
+                 .accessibilityElement(children: .ignore).accessibilityLabel("Review: " + readiness.review.rawValue)
+
+                if primary, let base = pull.base?.ref {
+                    actionButton("Merge", primary: true) { confirmation = .ready }
+                        .accessibilityLabel("Merge #\(pull.number) into \(base)")
+                        .help("Ready to merge into " + base)
+                } else {
+                    let (mark, label) = readiness.merge.appearance
+                    HStack(spacing: 4) {
+                        mark.icon()
+                        Text(label)
+                    }.help(readiness.merge.rawValue)
+                     .accessibilityElement(children: .ignore).accessibilityLabel(readiness.merge.rawValue)
+                }
+            } else {
+                WorkflowMark.clock.icon()
+                Text(readinessError == nil ? "Loading" : "Status unavailable")
+            }
+        }.font(.custom("GeistMono-Regular", size: 11))
     }
 }

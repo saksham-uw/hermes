@@ -71,7 +71,7 @@ private final class Stub: URLProtocol, @unchecked Sendable {
                 let vars = body["variables"] as! [String: Any]
                 precondition(vars["number"] as? Int == 3 && vars["repo"] as? String == "project")
                 let info: [String: Any] = [
-                    "state": "OPEN", "headRefOid": "expected", "isDraft": Self.isDraft, "mergeable": "MERGEABLE",
+                    "state": "OPEN", "baseRefName": "main", "headRefOid": "expected", "isDraft": Self.isDraft, "mergeable": "MERGEABLE",
                     "mergeStateStatus": Self.mergeState, "reviewDecision": Self.reviewDecision as Any,
                     "reviewRequests": ["totalCount": Self.pendingReviews], "comments": ["totalCount": 0],
                     "latestOpinionatedReviews": ["totalCount": 1, "nodes": [["state": "APPROVED"]]]
@@ -163,6 +163,18 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         func readiness() async throws -> PullReadiness { try await api.pullReadiness(repo: "project", pull: p, connection: github) }
         let approved = try await readiness()
         precondition(approved.review == .approved && approved.merge == .ready)
+        let green = CheckCounts(passed: 2)
+        precondition(approved.readyForPrimaryMerge(checks: green))
+        precondition(approved.readyForPrimaryMerge(checks: CheckCounts(passed: 2, skipped: 1)))
+        for incomplete in [nil, CheckCounts(), CheckCounts(skipped: 1), checks, partial, denied, outage,
+                           CheckCounts(passed: 1, pending: 1), CheckCounts(passed: 1, failed: 1),
+                           CheckCounts(passed: 1, missingPermissions: ["Checks"]), CheckCounts(passed: 1, unavailable: ["Checks"])] {
+            precondition(!approved.readyForPrimaryMerge(checks: incomplete))
+        }
+        Stub.pendingReviews = 1
+        let requested = try await readiness()
+        precondition(!requested.readyForPrimaryMerge(checks: green))
+        Stub.pendingReviews = 0
         Stub.mergeState = "BLOCKED"; Stub.reviewDecision = "REVIEW_REQUIRED"
         let required = try await readiness()
         precondition(required.review == .required && required.merge == .blocked)
@@ -175,6 +187,7 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         Stub.pendingReviews = 0; Stub.isDraft = true
         let draft = try await readiness()
         precondition(draft.review == .approved && draft.merge == .draft)
+        for status in [required, conflicts, rerequested, draft] { precondition(!status.readyForPrimaryMerge(checks: green)) }
         let boundary = ISO8601DateFormatter().date(from: "2025-02-03T00:00:00Z")!
         let activity = RepoActivity(branches: branches, pulls: pulls)
         precondition(activity.recent(at: boundary).map(\.name) == ["new"])

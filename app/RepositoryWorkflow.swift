@@ -83,6 +83,7 @@ struct PullReadiness: Decodable {
         let nodes: [Review]
         let totalCount: Int
     }
+    let baseRefName: String
     let headRefOid: String
     let isDraft: Bool
     let state: String
@@ -132,6 +133,12 @@ struct PullReadiness: Decodable {
             if opinions.contains("APPROVED") { return .approved }
             return comments.totalCount > 0 ? .commented : .none
         }
+    }
+
+    func readyForPrimaryMerge(checks: CheckCounts?) -> Bool {
+        guard let checks, state == "OPEN", review == .approved, merge == .ready else { return false }
+        return checks.passed > 0 && checks.pending == 0 && checks.failed == 0 &&
+            checks.missingPermissions.isEmpty && checks.unavailable.isEmpty
     }
 
     var merge: Merge {
@@ -190,7 +197,7 @@ extension ConnectorAPI {
         let query = """
         query($org:String!, $repo:String!, $number:Int!) {
           repository(owner:$org, name:$repo) { pullRequest(number:$number) {
-            headRefOid state isDraft mergeable mergeStateStatus reviewDecision
+            headRefOid baseRefName state isDraft mergeable mergeStateStatus reviewDecision
             reviewRequests { totalCount }
             latestOpinionatedReviews(first:100) { totalCount nodes { state } }
             comments: reviews(first:1, states:[COMMENTED]) { totalCount }
@@ -214,6 +221,7 @@ extension ConnectorAPI {
             throw ConnectorError(result.errors?.first?.message ?? "GitHub could not read this PR.")
         }
         guard status.headRefOid == pull.head.sha else { throw ConnectorError("Branch updated. Refresh the repository.") }
+        guard status.baseRefName == pull.base?.ref else { throw ConnectorError("PR target changed. Refresh the repository.") }
         return status
     }
 

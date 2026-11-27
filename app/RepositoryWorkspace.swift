@@ -203,13 +203,14 @@ private struct RepoDetail: View {
     @State private var expanded: String?
     @State private var showImages = false
     @State private var wideRows = false
+    @State private var mergeFeedback = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 17) {
             HStack {
                 actionButton("‹ Repositories", action: back).keyboardShortcut(.cancelAction)
                 Spacer()
-                actionButton("Refresh") { revision += 1 }
+                actionButton("Refresh") { mergeFeedback = ""; revision += 1 }
             }.disabled(state.busy)
             VStack(alignment: .leading, spacing: 3) {
                 CopyText(github.scopeID, size: 12, face: "GeistMono-Regular", muted: true)
@@ -217,11 +218,12 @@ private struct RepoDetail: View {
             }
             HStack(spacing: 4) {
                 ForEach(RepoSection.allCases, id: \.self) { item in
-                    Button { section = item } label: { LabelText(text: item.rawValue, bold: true) }
+                    Button { mergeFeedback = ""; section = item } label: { LabelText(text: item.rawValue, bold: true) }
                         .buttonStyle(TabStyle(selected: section == item))
                         .accessibilityAddTraits(section == item ? .isSelected : [])
                 }
             }.disabled(state.busy)
+            if !mergeFeedback.isEmpty { Text(mergeFeedback).textSelection(.enabled) }
             if !state.error.isEmpty { Text(state.error) }
             if let data = state.activity {
                 switch section {
@@ -335,8 +337,38 @@ private struct RepoDetail: View {
     }
 
     private func statusLine(_ pull: Pull, expanded: Bool) -> some View {
-        PullStatusLine(repo: repo, github: github, pull: pull, api: state.api, expanded: expanded)
+        PullStatusLine(repo: repo, github: github, pull: pull, api: state.api, expanded: expanded) { action in
+            merge(pull, action: action)
+        }.disabled(state.busy)
             .id("\(pull.number)/\(pull.head.sha)/\(revision)/\(state.reviewRevisions[pull.number, default: 0])")
+    }
+
+    private func merge(_ pull: Pull, action: MergeAction) {
+        guard !state.busy, let base = pull.base?.ref else { return }
+        state.busy = true
+        mergeFeedback = "Merging #\(pull.number) into \(base)…"
+        Task { @MainActor in
+            defer {
+                state.busy = false
+                revision += 1
+            }
+            do {
+                if action == .ready {
+                    async let readiness = state.api.pullReadiness(repo: repo, pull: pull, connection: github)
+                    async let checks = state.api.checks(repo: repo, pull: pull, connection: github)
+                    let (current, results) = try await (readiness, checks)
+                    guard current.readyForPrimaryMerge(checks: results) else {
+                        throw ConnectorError("PR status changed. Check the latest review and CI results.")
+                    }
+                }
+                try await state.api.merge(repo: repo, pull: pull, method: "merge", connection: github)
+                state.remember(nil, replacing: pull.number)
+                if base == "prod" { ahead = nil }
+                mergeFeedback = "Merged #\(pull.number) into \(base)."
+            } catch {
+                mergeFeedback = error.localizedDescription
+            }
+        }
     }
 
     private func lane(_ head: String, _ base: String, _ data: RepoActivity) -> some View {
@@ -362,7 +394,6 @@ private struct BranchWorkflow: View {
     @State private var editing = false
     @State private var reviewerOverride: String?
     @State private var recipientOverride: String?
-    @State private var confirmMerge = false
 
     private var reviewers: [String] {
         WorkflowKeys.reviewers(reviewerOverride ?? UserDefaults.standard.string(forKey: WorkflowKeys.reviewer(github)) ?? "")
@@ -394,29 +425,10 @@ private struct BranchWorkflow: View {
                         HermesField("Slack member ID or DM link", text: Binding(get: { recipient }, set: { recipientOverride = $0 }))
                     }
                     actionButton("Manage saved defaults", action: settings)
-                    if let pull {
-                        Hairline()
-                        if confirmMerge {
-                            Text("Merge #\(pull.number) into \(base)?")
-                            HStack {
-                                actionButton("Cancel") { confirmMerge = false }
-                                actionButton("Confirm merge", primary: true) { merge(pull) }
-                            }
-                        } else { actionButton("Merge into " + base) { confirmMerge = true } }
-                    }
                 }.disabled(state.busy)
             }
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface)
-    }
-
-    private func merge(_ pull: Pull) {
-        confirmMerge = false
-        perform {
-            try await state.api.merge(repo: repo, pull: pull, method: "merge", connection: github)
-            state.remember(nil, replacing: pull.number)
-            return "Merged #\(pull.number) into \(base)."
-        }
     }
 
     @ViewBuilder private var actions: some View {
@@ -443,7 +455,7 @@ private struct BranchWorkflow: View {
             if base == "main" {
                 actionButton("GitHub ↗") { NSWorkspace.shared.open(url(pull)) }
             }
-            actionButton("Options") { editing.toggle(); confirmMerge = false }
+            actionButton("Options") { editing.toggle() }
         } else {
             actionButton(reviewers.isEmpty ? "Open PR" : "Open PR + request review", primary: true) {
                 let users = reviewers
