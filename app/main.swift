@@ -10,7 +10,11 @@ private final class Hermes: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         if driver.panel != nil { driver.showUpdateInFocus() }
         else if updater.canCheckForUpdates { updater.checkForUpdates() }
     }
-    func validateMenuItem(_ item: NSMenuItem) -> Bool { driver.panel != nil || updater.canCheckForUpdates }
+    @objc private func about() {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+        driver.showAbout(version: version)
+    }
+    func validateMenuItem(_ menuItem: NSMenuItem) -> Bool { menuItem.action == #selector(about) ? driver.panel == nil : driver.panel != nil || updater.canCheckForUpdates }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         Theme.registerFonts()
@@ -18,7 +22,7 @@ private final class Hermes: NSObject, NSApplicationDelegate, NSMenuItemValidatio
         let menu = NSMenu()
         let sub = NSMenu(title: "HERMES")
         menu.addItem(withTitle: "HERMES", action: nil, keyEquivalent: "").submenu = sub
-        sub.addItem(withTitle: "About HERMES", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
+        sub.addItem(withTitle: "About HERMES", action: #selector(about), keyEquivalent: "").target = self
         sub.addItem(withTitle: "Check for Updates…", action: #selector(check), keyEquivalent: "").target = self
         sub.addItem(.separator())
         sub.addItem(withTitle: "Quit HERMES", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
@@ -28,12 +32,23 @@ private final class Hermes: NSObject, NSApplicationDelegate, NSMenuItemValidatio
                                             ("Paste", "paste:", "v"), ("Select All", "selectAll:", "a")] {
             edit.addItem(withTitle: title, action: NSSelectorFromString(selector), keyEquivalent: shortcut)
         }
+        let windowMenu = NSMenu(title: "Window")
+        menu.addItem(withTitle: "Window", action: nil, keyEquivalent: "").submenu = windowMenu
+        windowMenu.addItem(withTitle: "Minimize", action: #selector(NSWindow.performMiniaturize(_:)), keyEquivalent: "m")
+        windowMenu.addItem(withTitle: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         NSApp.mainMenu = menu
 
         let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
-        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 620),
-            styleMask: [.titled, .closable, .resizable, .miniaturizable], backing: .buffered, defer: false)
+        window = HermesAppWindow(contentRect: NSRect(x: 0, y: 0, width: 980, height: 620),
+            styleMask: [.titled, .closable, .resizable, .miniaturizable, .fullSizeContentView], backing: .buffered, defer: false)
         window.title = "HERMES"
+        window.titleVisibility = .hidden
+        window.titlebarAppearsTransparent = true
+        window.titlebarSeparatorStyle = .none
+        for button: NSWindow.ButtonType in [.closeButton, .miniaturizeButton, .zoomButton] {
+            window.standardWindowButton(button)?.isHidden = true
+        }
+        window.acceptsMouseMovedEvents = true
         window.appearance = NSAppearance(named: .darkAqua)
         let content = NSHostingView(rootView: HermesWindow(updatePreferences: UpdatePreferences(updater), updates: driver, version: version, check: check))
         content.sizingOptions = []

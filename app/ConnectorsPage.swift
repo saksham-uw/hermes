@@ -12,32 +12,34 @@ struct ConnectorsPage: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
-            ForEach(Service.allCases) { service in
-                let connection = connections[service]
-                VStack(alignment: .leading, spacing: 12) {
-                    HStack(spacing: 14) {
-                        ConnectorMark(service: service)
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(service.rawValue).font(Theme.display(20))
-                            Text(connection.map { $0.scope.isEmpty ? "\($0.user) · Choose repositories" : "\($0.user) · \($0.scope)" } ?? "Disconnected")
-                                .font(.custom("Inter-Regular", size: 13)).foregroundColor(Theme.muted)
+            if let service = selected {
+                ConnectorDetails(service: service, connection: connections[service], close: { selected = nil }) { value in
+                    if let value { try store.save(value, for: service) } else { try store.forget(service) }
+                    connections[service] = value
+                }.id(service)
+            } else {
+                ForEach(Service.allCases) { service in
+                    let connection = connections[service]
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack(spacing: 14) {
+                            ConnectorMark(service: service)
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text(service.rawValue).font(Theme.display(20))
+                                Text(connection.map { $0.scope.isEmpty ? "\($0.user) · Choose repositories" : "\($0.user) · \($0.scope)" } ?? "Disconnected")
+                                    .font(.custom("Inter-Regular", size: 13)).foregroundColor(Theme.muted)
+                            }
                         }
-                    }
-                    Text(service == .slack ? "Send messages as yourself in one workspace." : "Manage branches and pull requests in selected repositories.")
-                        .font(.custom("Inter-Regular", size: 14)).fixedSize(horizontal: false, vertical: true)
-                    actionButton(connection == nil ? "Connect" : "Manage", primary: connection == nil) { selected = service }
-                }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                 .background(Theme.canvas).overlay(Rectangle().strokeBorder(Theme.rule))
+                        Text(service == .slack ? "Send messages as yourself in one workspace." : "Manage branches and pull requests in selected repositories.")
+                            .font(.custom("Inter-Regular", size: 14)).fixedSize(horizontal: false, vertical: true)
+                        actionButton(connection == nil ? "Connect" : "Manage", primary: connection == nil) { selected = service }
+                    }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
+                     .background(Theme.canvas).overlay(Rectangle().strokeBorder(Theme.rule))
+                }
             }
             if !error.isEmpty { Text(error) }
         }.onAppear {
             for service in Service.allCases {
                 do { connections[service] = try store.read(service) } catch { self.error = error.localizedDescription }
-            }
-        }.sheet(item: $selected) { service in
-            ConnectorSheet(service: service, connection: connections[service]) { value in
-                if let value { try store.save(value, for: service) } else { try store.forget(service) }
-                connections[service] = value
             }
         }
     }
@@ -57,11 +59,12 @@ private struct ConnectorMark: View {
     }
 }
 
-private struct ConnectorSheet: View {
+private struct ConnectorDetails: View {
     let service: Service
     @State var connection: Connection?
+    let close: () -> Void
     let persist: (Connection?) throws -> Void
-    @Environment(\.dismiss) var dismiss
+
     @State private var editingRepositories = false
     @State private var workTask: Task<Void, Never>?
     @State private var busy = false
@@ -74,57 +77,58 @@ private struct ConnectorSheet: View {
             HStack {
                 Text(service.rawValue).font(Theme.display(24))
                 Spacer()
-                actionButton("Done") { dismiss() }
+                actionButton("Done") { close() }
             }.padding(18)
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    if let c = connection {
-                        LabelText(text: "Connected as")
-                        Text(c.scope.isEmpty ? c.user : "\(c.user) · \(c.scope)").font(Theme.display(18))
-                        if service == .github {
-                            if c.grant != nil && (editingRepositories || c.repos.isEmpty) {
-                                GitHubRepositorySelection(connection: c) { owner, repos in
-                                    var latest = try latestConnection(c)
-                                    latest.scope = owner
-                                    latest.scopeID = owner
-                                    latest.repos = repos
-                                    try save(latest)
-                                }.id(c.grant?.id)
-                                if !c.repos.isEmpty {
-                                    actionButton("Cancel selection") { editingRepositories = false }
-                                }
-                            } else {
-                                if c.grant != nil {
-                                    actionButton("Choose repositories") { editingRepositories = true }
-                                }
-                                ForEach(c.repos, id: \.self) { Text(verbatim: c.scopeID + "/" + $0) }
+            Hairline()
+            VStack(alignment: .leading, spacing: 14) {
+                if let c = connection {
+                    LabelText(text: "Connected as")
+                    CopyText(c.scope.isEmpty ? c.user : "\(c.user) · \(c.scope)", size: 18, face: "Archivo-SemiBold")
+                    if service == .github {
+                        if c.grant != nil && (editingRepositories || c.repos.isEmpty) {
+                            GitHubRepositorySelection(connection: c) { owner, repos in
+                                var latest = try latestConnection(c)
+                                latest.scope = owner
+                                latest.scopeID = owner
+                                latest.repos = repos
+                                try save(latest)
+                            }.id(c.grant?.id)
+                            if !c.repos.isEmpty {
+                                actionButton("Cancel selection") { editingRepositories = false }
+                            }
+                        } else {
+                            if c.grant != nil {
+                                actionButton("Choose repositories") { editingRepositories = true }
+                            }
+                            ForEach(c.repos, id: \.self) { CopyText(c.scopeID + "/" + $0, size: 13, face: "GeistMono-Regular") }
+                        }
+                    }
+                    Hairline()
+                    actionButton("Reconnect account") { signIn() }
+                    if confirmForget {
+                        Text("Remove this \(service.rawValue) connection from this Mac?")
+                        HStack {
+                            actionButton("Cancel") { confirmForget = false }
+                            actionButton("Confirm disconnect") {
+                                do { try persist(nil); close() } catch { problem = error.localizedDescription }
                             }
                         }
-                        Divider()
-                        actionButton("Reconnect account") { signIn() }
-                        actionButton("Disconnect") { confirmForget = true }
-                    } else {
-                        Text("Approve HERMES on " + service.rawValue + " to continue.")
-                        actionButton("Authorize with " + service.rawValue, primary: true) { signIn() }
-                    }
-                    if busy { ProgressView().controlSize(.small) }
-                    if !problem.isEmpty { Text(problem).textSelection(.enabled) }
-                }.font(.custom("Inter-Regular", size: 14)).frame(maxWidth: .infinity, alignment: .leading)
-                 .padding(18).disabled(busy)
-            }
-        }.frame(minWidth: 420, idealWidth: 500, minHeight: 300, idealHeight: 470)
+                    } else { actionButton("Disconnect") { confirmForget = true } }
+                } else {
+                    Text("Approve HERMES on " + service.rawValue + " to continue.")
+                    actionButton("Authorize with " + service.rawValue, primary: true) { signIn() }
+                }
+                if busy { LoadingMark(title: "Connecting…") }
+                if !problem.isEmpty { Text(problem).textSelection(.enabled) }
+            }.font(.custom("Inter-Regular", size: 14)).frame(maxWidth: .infinity, alignment: .leading)
+             .padding(18).disabled(busy)
+        }.frame(maxWidth: .infinity, alignment: .leading)
          .background(Theme.canvas).foregroundColor(Theme.ink).tint(Theme.ink)
          .onDisappear { workTask?.cancel() }
          .onAppear {
             if connection == nil { signIn() }
          }
-         .alert("Disconnect \(service.rawValue) from HERMES?", isPresented: $confirmForget) {
-            Button("Cancel", role: .cancel) {}
-            Button("Disconnect", role: .destructive) {
-                do { try persist(nil); dismiss() } catch { problem = error.localizedDescription }
-            }
-         } message: { Text("This removes the credential from this Mac. You can separately revoke the token in \(service.rawValue).") }
+
     }
 
     private func save(_ c: Connection) throws {
@@ -189,19 +193,16 @@ private struct GitHubRepositorySelection: View {
         VStack(alignment: .leading, spacing: 12) {
             LabelText(text: "Repository access")
             if loadingAccounts {
-                ProgressView("Loading GitHub accounts…").controlSize(.small)
+                LoadingMark(title: "Loading GitHub accounts…")
             } else if !accountError.isEmpty {
                 Text(accountError).textSelection(.enabled)
             } else if installations.isEmpty {
                 Text("To see repositories here, install HERMES on your organization or personal account and choose the repositories on GitHub. Your organization may require owner approval.")
             } else {
-                Picker("Organization or account", selection: $installationID) {
-                    ForEach(installations) { item in
-                        Text(item.account.login).tag(Optional(item.id))
-                    }
-                }
+                HermesChoices(title: installations.first(where: { $0.id == installationID })?.account.login ?? "Choose account",
+                              items: installations, label: { $0.account.login }) { installationID = $0.id }
                 if loadedInstallation != installationID || installationID == nil {
-                    ProgressView("Loading repositories…").controlSize(.small)
+                    LoadingMark(title: "Loading repositories…")
                 } else if !repoError.isEmpty {
                     Text(repoError).textSelection(.enabled)
                 } else if repositories.isEmpty {
@@ -210,7 +211,7 @@ private struct GitHubRepositorySelection: View {
                     ForEach(repositories, id: \.self) { repo in
                         Toggle(repo, isOn: Binding(get: { chosen.contains(repo) }, set: { enabled in
                             if enabled { chosen.insert(repo) } else { chosen.remove(repo) }
-                        })).toggleStyle(.checkbox)
+                        })).toggleStyle(HermesToggleStyle())
                     }
                     actionButton("Save repositories", primary: true) {
                         guard let owner = installations.first(where: { $0.id == installationID }) else { return }

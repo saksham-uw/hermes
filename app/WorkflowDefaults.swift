@@ -10,12 +10,12 @@ struct WorkflowDefaultsPage: View {
             if let github {
                 ReviewerPreference(connection: github)
             } else { Text("Connect GitHub to set a default reviewer.") }
-            Divider()
+            Hairline()
             if let slack {
                 RecipientPreference(connection: slack)
             } else { Text("Connect Slack to set a direct-message recipient.") }
             if let github {
-                Divider()
+                Hairline()
                 RuntimePreference(connection: github)
             }
             if !problem.isEmpty { Text(problem) }
@@ -48,7 +48,7 @@ private struct ReviewerPreference: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("GitHub reviewers").font(Theme.display(17))
-            TextField("GitHub usernames, separated by commas", text: $reviewers)
+            HermesField("GitHub usernames, separated by commas", text: $reviewers)
             Text("Requested when you open a PR into main or prod for \(connection.scopeID).")
                 .foregroundColor(Theme.muted)
         }
@@ -63,7 +63,7 @@ private struct RuntimePreference: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Production runtime").font(Theme.display(17))
-            TextField("Production Docker context (optional)", text: $context)
+            HermesField("Production Docker context (optional)", text: $context)
             Text("Reads running container images from this Docker context. Use a context that points to your production host.").foregroundColor(Theme.muted)
         }
     }
@@ -82,11 +82,10 @@ private struct RecipientPreference: View {
         VStack(alignment: .leading, spacing: 7) {
             Text("Slack recipient").font(Theme.display(17))
             if !people.isEmpty {
-                Menu(people.first(where: { $0.id == recipient })?.label ?? "Choose a workspace member") {
-                    ForEach(people) { person in Button(person.label + " · @" + person.name) { recipient = person.id } }
-                }
+                HermesChoices(title: people.first(where: { $0.id == recipient })?.label ?? "Choose a workspace member",
+                              items: people, label: { $0.label + " · @" + $0.name }) { recipient = $0.id }
             }
-            TextField("Slack member ID or existing DM link", text: $recipient)
+            HermesField("Slack member ID or existing DM link", text: $recipient)
             Text("PR links go to this person in \(connection.scope) when you click Send on Slack.").foregroundColor(Theme.muted)
             if !recipient.isEmpty && ConnectorAPI.recipientID(recipient) == nil { Text("Enter a member ID or a one-to-one Slack DM link.") }
             if !problem.isEmpty { Text(problem).foregroundColor(Theme.muted) }

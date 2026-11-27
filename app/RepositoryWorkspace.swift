@@ -1,8 +1,5 @@
 import SwiftUI
 
-private let phosphor = Color(red: 0.62, green: 0.86, blue: 0.81)
-private let slate = Color(red: 0.18, green: 0.21, blue: 0.23)
-
 struct RepositoryWorkspace: View {
     let showGrid: Bool
     let settings: (SettingsSection) -> Void
@@ -20,7 +17,7 @@ struct RepositoryWorkspace: View {
                     RepoDetail(repo: selected, github: github, slack: slack, state: state,
                                back: { self.selected = nil }, settings: settings).id(selected)
                 } else {
-                    WorkspaceCanvas(showGrid: showGrid).frame(height: 88)
+                    WorkspaceCanvas(showGrid: showGrid).frame(height: 104)
                     HStack {
                         Text("Repositories").font(Theme.display(24))
                         Spacer()
@@ -124,53 +121,66 @@ struct RepositoryWorkspace: View {
     }
 }
 
+private extension RepositoryState {
+    var productionSummary: String {
+        if !live.isEmpty { return "Runtime · " + live }
+        if !imageError.isEmpty { return "Prod · " + imageError }
+        guard let result = published else { return "Reading production tag…" }
+        let tags = Set(result.images.compactMap { $0.split(separator: ":").last.map(String.init) }).sorted()
+        guard let tag = tags.first(where: { $0.hasPrefix("prod-") }) ?? tags.first else { return "No published tag" }
+        return "Prod build · " + tag
+    }
+}
+
 private struct RepoCard: View {
     let repo: String
     let owner: String
     @ObservedObject var state: RepositoryState
     let open: () -> Void
+    @State private var hover = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     var body: some View {
-        Button(action: open) {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack {
-                    Image(systemName: "point.3.connected.trianglepath.dotted").foregroundColor(phosphor)
-                    LabelText(text: owner)
-                    Spacer()
-                    Image(systemName: "arrow.up.right")
-                }.foregroundColor(Theme.muted)
-                Text(verbatim: repo).font(Theme.display(24)).lineLimit(1).minimumScaleFactor(0.7)
-                Divider()
-                HStack(spacing: 22) {
-                    metric("Branches · 48h", state.activity.map { $0.recent().count })
-                    metric("Open PRs", state.activity?.pulls.count)
+        ZStack {
+            // All card whitespace is an open target. Text remains available to the selection responder.
+            Button(action: open) { Rectangle().fill(Color.clear).contentShape(Rectangle()) }
+                .buttonStyle(.plain).accessibilityLabel("Open " + repo)
+            VStack(alignment: .leading, spacing: 17) {
+                HStack(spacing: 12) {
+                    RepositoryGlyph(spread: hover && !reduceMotion ? 1 : 0)
+                        .frame(width: 34, height: 34).background(Theme.canvas)
+                        .allowsHitTesting(false)
+                    VStack(alignment: .leading, spacing: 3) {
+                        CopyText(owner, size: 11, face: "GeistMono-Regular", muted: true, activate: open)
+                        CopyText(repo, size: 22, face: "Archivo-SemiBold", activate: open)
+                    }
+                    Spacer(minLength: 2)
+                    Text("↗").font(.custom("GeistMono-Regular", size: 19))
+                        .foregroundColor(hover ? Theme.ink : Theme.muted).allowsHitTesting(false)
                 }
-                if !state.error.isEmpty { Text(state.error).font(.caption).lineLimit(2) }
-                imageSummary.lineLimit(2).font(.custom("GeistMono-Regular", size: 11)).foregroundColor(phosphor)
-            }.padding(16).frame(maxWidth: .infinity, minHeight: 172, alignment: .topLeading)
-                .background(slate).overlay(Rectangle().strokeBorder(Theme.rule))
-                .overlay(alignment: .topLeading) { Rectangle().fill(phosphor).frame(width: 42, height: 2) }
-                .contentShape(Rectangle())
-        }.buttonStyle(.plain)
+                HStack(spacing: 20) {
+                    stat(state.activity.map { $0.recent().count }, singular: "branch · 48h", plural: "branches · 48h")
+                    stat(state.activity?.pulls.count, singular: "open PR", plural: "open PRs")
+                }
+                Hairline().allowsHitTesting(false)
+                CopyText(state.error.isEmpty ? state.productionSummary : state.error,
+                         size: 11, face: "GeistMono-Regular", muted: true, activate: open)
+            }.padding(18)
+        }
+        .background(hover ? Color(white: 0.235) : Theme.surface)
+        .overlay(Rectangle().strokeBorder(hover ? Theme.muted : Theme.rule).allowsHitTesting(false))
+        .shadow(color: .black.opacity(hover ? 0.23 : 0), radius: 6, y: 4)
+        .offset(y: hover && !reduceMotion ? -3 : 0)
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: hover)
+        .onHover { hover = $0 }
     }
 
-    private var imageSummary: Text {
-        if !state.live.isEmpty { return Text("Runtime · " + state.live) }
-        if !state.imageError.isEmpty { return Text("Prod · " + state.imageError) }
-        if let result = state.published {
-            let tags = Set(result.images.compactMap { $0.split(separator: ":").last.map(String.init) })
-            let pinned = tags.filter { $0.hasPrefix("prod-") }.sorted() + tags.filter { $0 != "latest" }.sorted()
-            return Text("Prod build · " + (tags.isEmpty ? "No tag reported" : (pinned.first ?? "latest")))
-        }
-        return Text("Loading production tag…")
-    }
-
-    private func metric(_ label: String, _ count: Int?) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(count.map(String.init) ?? "—").font(Theme.display(20))
-            Text(label).font(.custom("GeistMono-Regular", size: 11)).foregroundColor(Theme.muted)
-        }
+    private func stat(_ count: Int?, singular: String, plural: String) -> some View {
+        CopyText((count.map(String.init) ?? "—") + " " + (count == 1 ? singular : plural), size: 12, face: "GeistMono-Regular", activate: open)
     }
 }
+
+private enum RepoSection: String, CaseIterable { case branches = "Branches", production = "Production" }
 
 private struct RepoDetail: View {
     let repo: String
@@ -181,52 +191,72 @@ private struct RepoDetail: View {
     let settings: (SettingsSection) -> Void
     @State private var revision = 0
     @State private var ahead: Int?
+    @State private var section = RepoSection.branches
+    @State private var expanded: String?
+    @State private var showImages = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 17) {
             HStack {
-                actionButton("‹ Repositories", action: back)
+                actionButton("‹ Repositories", action: back).keyboardShortcut(.cancelAction)
                 Spacer()
                 actionButton("Refresh") { revision += 1 }
             }.disabled(state.busy)
-            Text(verbatim: github.scopeID + " / " + repo).font(Theme.display(25))
-            VStack(alignment: .leading, spacing: 6) {
-                LabelText(text: "Production images", bold: true).foregroundColor(phosphor)
-                if !state.live.isEmpty { Text("Runtime · " + state.live).textSelection(.enabled) }
-                else { Button("Configure live runtime") { settings(.workflow) }.buttonStyle(.link) }
-                if !state.imageError.isEmpty { Text(state.imageError).textSelection(.enabled) }
-                if let images = state.published {
-                    ForEach(images.images, id: \.self) { Text(verbatim: $0).font(.system(.body, design: .monospaced)).textSelection(.enabled) }
-                    if let url = images.run { Link("View production image build ↗", destination: url) }
-                    if !images.note.isEmpty { Text(images.note) }
+            VStack(alignment: .leading, spacing: 3) {
+                CopyText(github.scopeID, size: 12, face: "GeistMono-Regular", muted: true)
+                CopyText(repo, size: 30, face: "Archivo-SemiBold")
+            }
+            HStack(spacing: 4) {
+                ForEach(RepoSection.allCases, id: \.self) { item in
+                    Button { section = item } label: { LabelText(text: item.rawValue, bold: true) }
+                        .buttonStyle(TabStyle(selected: section == item))
+                        .accessibilityAddTraits(section == item ? .isSelected : [])
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(14).background(slate)
-            if !state.error.isEmpty { Text(state.error).textSelection(.enabled) }
+            }.disabled(state.busy)
+            if !state.error.isEmpty { Text(state.error) }
             if let data = state.activity {
-                LabelText(text: "Production · main → prod", bold: true)
-                if data.branches.contains(where: { $0.name == "main" }) && data.branches.contains(where: { $0.name == "prod" }) {
-                    if let ahead {
-                        Text(ahead == 0 ? "Production is up to date with main." : "main is \(ahead) commit\(ahead == 1 ? "" : "s") ahead of prod.").foregroundColor(Theme.muted)
+                switch section {
+                case .branches:
+                    let recent = data.recent().filter { $0.name != "main" && $0.name != "prod" }
+                    LabelText(text: "Last 48 hours").foregroundColor(Theme.muted)
+                    if recent.isEmpty { Text("No recent feature branches.").foregroundColor(Theme.muted) }
+                    VStack(spacing: 0) {
+                        ForEach(recent, id: \.name) { branch in
+                            row(branch.name, data)
+                        }
                     }
-                    lane("main", "prod", data)
-                } else { Text("This repository needs main and prod branches for promotion.") }
-                LabelText(text: "Branch activity · last 48 hours", bold: true)
-                let branches = data.recent().filter { $0.name != "main" && $0.name != "prod" }
-                if branches.isEmpty { Text("No feature branches with commits in the last 48 hours.").foregroundColor(Theme.muted) }
-                ForEach(branches, id: \.name) { branch in
-                    lane(branch.name, "main", data)
-                }
-                let older = data.pulls.filter { pull in
-                    pull.head.repo?.full_name.caseInsensitiveCompare(github.scopeID + "/" + repo) == .orderedSame &&
-                    pull.base?.ref == "main" && !branches.contains { $0.name == pull.head.ref }
-                }
-                if !older.isEmpty {
-                    LabelText(text: "Other open PRs into main", bold: true)
-                    ForEach(older) { pull in
-                        if let head = pull.head.ref { lane(head, "main", data) }
+                    let older = data.pulls.filter { pull in
+                        pull.head.repo?.full_name.caseInsensitiveCompare(github.scopeID + "/" + repo) == .orderedSame &&
+                        pull.base?.ref == "main" && !recent.contains { $0.name == pull.head.ref }
+                    }
+                    if !older.isEmpty {
+                        LabelText(text: "Other open pull requests").foregroundColor(Theme.muted)
+                        VStack(spacing: 0) {
+                            ForEach(older) { pull in if let head = pull.head.ref { row(head, data) } }
+                        }
+                    }
+                case .production:
+                    CopyText(state.productionSummary, size: 14, face: "GeistMono-Regular")
+                    if data.branches.contains(where: { $0.name == "main" }) && data.branches.contains(where: { $0.name == "prod" }) {
+                        HStack {
+                            Text("main → prod").font(Theme.display(18))
+                            Spacer()
+                            if let ahead { Text(ahead == 0 ? "Up to date" : "\(ahead) ahead").foregroundColor(Theme.muted) }
+                        }
+                        lane("main", "prod", data)
+                    } else { Text("Promotion requires main and prod branches.") }
+                    Hairline()
+                    actionButton(showImages ? "Hide image details" : "Image details") { showImages.toggle() }
+                    if showImages {
+                        if state.live.isEmpty { actionButton("Configure live runtime") { settings(.workflow) } }
+                        if let result = state.published {
+                            ForEach(result.images, id: \.self) { CopyText($0, size: 12, face: "GeistMono-Regular") }
+                            if !result.note.isEmpty { Text(result.note) }
+                            if let url = result.run { actionButton("View build ↗") { NSWorkspace.shared.open(url) } }
+                        }
                     }
                 }
-            } else if state.loading { ProgressView("Loading repository…") }
+            } else if state.loading { LoadingMark(title: "Loading repository…") }
         }.task(id: revision) {
             async let distance = try? state.api.promotionDistance(repo: repo, connection: github)
             await state.load(repo, github)
@@ -235,10 +265,34 @@ private struct RepoDetail: View {
         }
     }
 
+    private func row(_ name: String, _ data: RepoActivity) -> some View {
+        let pull = data.pull(head: name, base: "main", fullName: github.scopeID + "/" + repo)
+        let active = expanded == name
+        let toggle = { if !state.busy { expanded = active ? nil : name } }
+        return VStack(alignment: .leading, spacing: 0) {
+            Hairline()
+            ZStack {
+                Button(action: toggle) { Color.clear.contentShape(Rectangle()) }
+                    .buttonStyle(.plain).accessibilityLabel((active ? "Collapse " : "Expand ") + name).disabled(state.busy)
+                HStack(spacing: 12) {
+                    Text(active ? "−" : "+").foregroundColor(Theme.muted).allowsHitTesting(false)
+                    CopyText(name, size: 14, face: "GeistMono-Regular", activate: toggle)
+                    Spacer(minLength: 4)
+                    if let pull { CopyText("#\(pull.number)", size: 12, face: "GeistMono-Regular", muted: true, activate: toggle) }
+                    if let branch = data.branches.first(where: { $0.name == name }),
+                       let date = ISO8601DateFormatter().date(from: branch.target.committedDate) {
+                        CopyText(abs(date.timeIntervalSinceNow) < 60 ? "Just now" : date.formatted(.relative(presentation: .numeric)), size: 11, muted: true, activate: toggle)
+                    }
+                }.padding(.horizontal, 12).padding(.vertical, 11)
+            }
+            if active { lane(name, "main", data).id(name) }
+        }.background(active ? Theme.surface : Color.clear)
+    }
+
     private func lane(_ head: String, _ base: String, _ data: RepoActivity) -> some View {
         BranchWorkflow(repo: repo, head: head, base: base, github: github, slack: slack, state: state,
                        pull: data.pull(head: head, base: base, fullName: github.scopeID + "/" + repo),
-                       branch: data.branches.first { $0.name == head }, hasBase: data.branches.contains { $0.name == base } && (base != "prod" || ahead != 0),
+                       hasBase: data.branches.contains { $0.name == base } && (base != "prod" || ahead != 0),
                        revision: revision, settings: { settings(.workflow) })
     }
 }
@@ -251,7 +305,6 @@ private struct BranchWorkflow: View {
     let slack: Connection?
     @ObservedObject var state: RepositoryState
     let pull: Pull?
-    let branch: BranchInfo?
     let hasBase: Bool
     let revision: Int
     let settings: () -> Void
@@ -273,34 +326,41 @@ private struct BranchWorkflow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Image(systemName: "arrow.triangle.branch").foregroundColor(phosphor)
-                Text(verbatim: head).font(Theme.display(17)).lineLimit(2)
-                Text("→ " + base).foregroundColor(Theme.muted)
-                Spacer()
-                if let branch, let date = ISO8601DateFormatter().date(from: branch.target.committedDate) {
-                    Text(date, style: .relative).font(.caption).help(date.formatted())
-                }
-            }
             if let pull {
-                Link("#\(pull.number)  " + pull.title, destination: url(pull))
+                HStack {
+                    CopyText("#\(pull.number)  " + pull.title, size: 15, face: "Archivo-SemiBold")
+                    Spacer()
+                    actionButton("GitHub ↗") { NSWorkspace.shared.open(url(pull)) }
+                }
                 Text(checks.isEmpty ? "Loading checks…" : checks).font(.custom("GeistMono-Regular", size: 11)).foregroundColor(Theme.muted)
-            }
+            } else if base == "main" { Text("Pull request into main").foregroundColor(Theme.muted) }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { actions }
                 VStack(alignment: .leading, spacing: 8) { actions }
             }.disabled(state.busy)
-            if working { ProgressView().controlSize(.small) }
+            if working { LoadingMark(title: "Working…") }
             if !feedback.isEmpty { Text(feedback).textSelection(.enabled) }
             if editing {
-                TextField("GitHub reviewers", text: Binding(get: { reviewerOverride ?? reviewers.joined(separator: ", ") }, set: { reviewerOverride = $0 }))
-                if slack != nil {
-                    TextField("Slack member ID or DM link", text: Binding(get: { recipient }, set: { recipientOverride = $0 }))
-                }
-                Button("Manage saved defaults", action: settings).buttonStyle(.link)
+                VStack(alignment: .leading, spacing: 8) {
+                    HermesField("GitHub reviewers", text: Binding(get: { reviewerOverride ?? reviewers.joined(separator: ", ") }, set: { reviewerOverride = $0 }))
+                    if slack != nil {
+                        HermesField("Slack member ID or DM link", text: Binding(get: { recipient }, set: { recipientOverride = $0 }))
+                    }
+                    actionButton("Manage saved defaults", action: settings)
+                    if let pull {
+                        Hairline()
+                        if confirmMerge {
+                            Text("Merge #\(pull.number) into \(base)?")
+                            HStack {
+                                actionButton("Cancel") { confirmMerge = false }
+                                actionButton("Confirm merge", primary: true) { merge(pull) }
+                            }
+                        } else { actionButton("Merge into " + base) { confirmMerge = true } }
+                    }
+                }.disabled(state.busy)
             }
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Theme.surface).overlay(Rectangle().strokeBorder(Theme.rule))
+        .background(Theme.surface)
         .task(id: "\(pull?.head.sha ?? "")/\(pull?.number ?? 0)/\(revision)") {
             guard let pull else { checks = ""; return }
             do {
@@ -313,17 +373,15 @@ private struct BranchWorkflow: View {
                 }
             }
         }
-        .alert("Merge #\(pull?.number ?? 0) into \(base)?", isPresented: $confirmMerge) {
-            Button("Cancel", role: .cancel) {}
-            Button("Merge", role: .destructive) {
-                guard let pull else { return }
-                perform {
-                    try await state.api.merge(repo: repo, pull: pull, method: "merge", connection: github)
-                    state.remember(nil, replacing: pull.number)
-                    return "Merged #\(pull.number) into \(base)."
-                }
-            }
-        } message: { Text(verbatim: github.scopeID + "/" + repo + " · " + head + " → " + base) }
+    }
+
+    private func merge(_ pull: Pull) {
+        confirmMerge = false
+        perform {
+            try await state.api.merge(repo: repo, pull: pull, method: "merge", connection: github)
+            state.remember(nil, replacing: pull.number)
+            return "Merged #\(pull.number) into \(base)."
+        }
     }
 
     @ViewBuilder private var actions: some View {
@@ -346,10 +404,7 @@ private struct BranchWorkflow: View {
                     }
                 }.help("Send this PR link to " + recipient)
             }
-            Menu {
-                Button("Change recipients") { editing.toggle() }
-                Button("Merge into " + base) { confirmMerge = true }
-            } label: { Image(systemName: "ellipsis") }.fixedSize().accessibilityLabel("More pull request actions")
+            actionButton("Options") { editing.toggle(); confirmMerge = false }
         } else {
             actionButton(reviewers.isEmpty ? "Open PR" : "Open PR + request review", primary: true) {
                 let users = reviewers
@@ -363,7 +418,7 @@ private struct BranchWorkflow: View {
                     return users.isEmpty ? "PR #\(created.number) is open." : "PR #\(created.number) is open. Requested " + users.joined(separator: ", ") + "."
                 }
             }.disabled(!hasBase)
-            Button("Recipients") { editing.toggle() }.buttonStyle(.link)
+            actionButton("Recipients") { editing.toggle() }
         }
     }
 

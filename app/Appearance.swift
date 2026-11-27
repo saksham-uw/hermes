@@ -2,11 +2,11 @@ import SwiftUI
 import CoreText
 
 enum Theme {
-    static let canvas = Color(red: 0.184, green: 0.188, blue: 0.196)
-    static let surface = Color(red: 0.209, green: 0.213, blue: 0.220)
-    static let ink = Color(red: 0.92, green: 0.92, blue: 0.90)
-    static let muted = Color(red: 0.74, green: 0.75, blue: 0.74)
-    static let rule = Color.white.opacity(0.17)
+    static let canvas = Color(white: 0.167)
+    static let surface = Color(white: 0.205)
+    static let ink = Color(white: 0.94)
+    static let muted = Color(white: 0.72)
+    static let rule = Color.white.opacity(0.15)
 
     static func registerFonts() {
         for name in ["Archivo-Variable", "GeistMono-Variable", "Inter-Variable"] {
@@ -37,14 +37,26 @@ struct LabelText: View {
 struct ActionStyle: ButtonStyle {
     var primary = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     init(primary: Bool = false) { self.primary = primary }
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label.padding(.horizontal, 14).frame(minHeight: 34)
+        configuration.label.textSelection(.disabled).padding(.horizontal, 14).frame(minHeight: 34)
             .foregroundColor(primary ? Theme.canvas : Theme.ink)
-            .background(primary ? Theme.ink : Theme.surface)
-            .overlay(Rectangle().strokeBorder(primary ? Theme.ink : Theme.rule))
+            .background(RoundedRectangle(cornerRadius: 4).fill(primary ? Theme.ink : Theme.surface))
+            .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(isFocused || primary ? Theme.ink : Theme.rule))
             .opacity(isEnabled ? (configuration.isPressed ? 0.66 : 1) : 0.45)
             .contentShape(Rectangle())
+    }
+}
+
+struct TabStyle: ButtonStyle {
+    let selected: Bool
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label.textSelection(.disabled).padding(.horizontal, 11).frame(minHeight: 34)
+            .foregroundColor(selected ? Theme.ink : Theme.muted)
+            .overlay(alignment: .bottom) {
+                Rectangle().fill(selected ? Theme.ink : Color.clear).frame(height: 2)
+            }.opacity(configuration.isPressed ? 0.65 : 1).contentShape(Rectangle())
     }
 }
 
@@ -66,21 +78,20 @@ struct HermesWindow: View {
         ZStack {
             VStack(spacing: 0) {
                 HStack(spacing: 12) {
-                    Text("HERMES").font(Theme.display(31)).tracking(-1.2)
+                    Text("HERMES").font(Theme.display(22)).tracking(-0.8)
                     Rectangle().fill(Theme.rule).frame(width: 1, height: 24)
                     HStack(spacing: 0) {
                         ForEach(MainTab.allCases, id: \.self) { item in
                             Button { tab = item } label: { LabelText(text: item.rawValue, bold: true) }
-                                .buttonStyle(ActionStyle(primary: tab == item))
+                                .buttonStyle(TabStyle(selected: tab == item))
                                 .accessibilityAddTraits(tab == item ? .isSelected : [])
                                 .keyboardShortcut(item == .workspace ? "1" : ",", modifiers: .command)
                         }
                     }.fixedSize()
-                    Spacer(minLength: 0)
-                    Button(action: check) {
-                        Image(systemName: "arrow.clockwise").accessibilityLabel("Check for updates")
-                    }.buttonStyle(ActionStyle()).help("Check for updates")
-                }.padding(.horizontal, 24).frame(height: 70)
+                    DragSurface().frame(maxWidth: .infinity, maxHeight: .infinity)
+                    LabelText(text: "v" + version).foregroundColor(Theme.muted)
+                    WindowButtons()
+                }.padding(.horizontal, 18).frame(height: 54)
                 Rectangle().fill(Theme.rule).frame(height: 1)
                 switch tab {
                 case .workspace:
@@ -90,12 +101,6 @@ struct HermesWindow: View {
                 case .settings:
                     SettingsPage(section: $section, showGrid: $showGrid, updates: updatePreferences, version: version, check: check)
                 }
-                Rectangle().fill(Theme.rule).frame(height: 1)
-                HStack {
-                    LabelText(text: "Version " + version)
-                    Spacer()
-                    LabelText(text: "macOS")
-                }.foregroundColor(Theme.muted).padding(.horizontal, 24).frame(height: 36)
             }.disabled(updates.panel != nil).accessibilityHidden(updates.panel != nil)
             if let panel = updates.panel {
                 Color.black.opacity(0.42).ignoresSafeArea()
@@ -111,14 +116,17 @@ struct HermesWindow: View {
                         Text(panel.message).font(.custom("Inter-Regular", size: 14)).foregroundColor(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                         if let progress = panel.progress {
-                            ProgressView(value: progress).tint(Theme.ink).padding(.top, 5)
+                            GeometryReader { geo in
+                                Rectangle().fill(Theme.rule).overlay(alignment: .leading) {
+                                    Rectangle().fill(Theme.ink).frame(width: geo.size.width * min(max(progress, 0), 1))
+                                }
+                            }.frame(height: 3).accessibilityLabel("Update progress").accessibilityValue("\(Int(progress * 100)) percent")
                         }
                     }.padding(22)
                     if panel.primary != nil || panel.secondary != nil {
                         HStack(spacing: 8) {
                             if let link = panel.releaseURL {
-                                Link(destination: link) { LabelText(text: "What's new") }
-                                    .foregroundColor(Theme.muted)
+                                actionButton("What’s new") { NSWorkspace.shared.open(link) }
                             }
                             Spacer()
                             if let action = panel.secondary { Button(action: action.run) { LabelText(text: action.label, bold: true) }.buttonStyle(ActionStyle()).keyboardShortcut(.cancelAction) }
@@ -129,6 +137,7 @@ struct HermesWindow: View {
                  .shadow(color: .black.opacity(0.3), radius: 14, y: 6).frame(maxWidth: 496).padding(.horizontal, 24)
             }
         }.foregroundColor(Theme.ink).background(Theme.canvas).preferredColorScheme(.dark)
+            .textSelection(.enabled).tint(Theme.ink).font(.custom("Inter-Regular", size: 14)).ignoresSafeArea()
     }
 }
 
@@ -156,5 +165,22 @@ struct WorkspaceCanvas: View {
                     .accessibilityLabel("HERMES")
             }
         }.background(Theme.surface).overlay(Rectangle().strokeBorder(Theme.rule))
+    }
+}
+
+
+private struct WindowButtons: View {
+    var body: some View {
+        HStack(spacing: 2) {
+            control("Minimize", mark: "−") { NSApp.keyWindow?.miniaturize(nil) }
+            control("Toggle full screen", mark: "□") { NSApp.keyWindow?.toggleFullScreen(nil) }
+            control("Close window", mark: "×") { NSApp.keyWindow?.performClose(nil) }
+        }
+    }
+    private func control(_ name: String, mark: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(verbatim: mark).font(.custom("GeistMono-Regular", size: 15)).frame(width: 23, height: 28)
+                .contentShape(Rectangle()).textSelection(.disabled)
+        }.buttonStyle(.plain).foregroundColor(Theme.muted).accessibilityLabel(name).help(name)
     }
 }

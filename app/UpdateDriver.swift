@@ -95,5 +95,9 @@ final class UpdateDriver: NSObject, ObservableObject, SPUUserDriver {
     }
     func showUpdateInstalledAndRelaunched(_ relaunched: Bool, acknowledgement: @escaping () -> Void) { acknowledgement() }
     func dismissUpdateInstallation() { panel = nil; acceptedRestart = false }
+    func showAbout(version: String) {
+        panel = UpdatePanel(title: "HERMES", message: "Version " + version, primary: action("Done") {})
+        showUpdateInFocus()
+    }
     func showUpdateInFocus() { window?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true) }
 }

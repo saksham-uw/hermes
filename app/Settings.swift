@@ -23,17 +23,10 @@ enum SettingsSection: String, CaseIterable {
     case workflow = "Workflow defaults"
     case updates = "Updates"
 
-    var icon: String {
-        switch self {
-        case .appearance: return "circle.lefthalf.filled"
-        case .connectors: return "link"
-        case .workflow: return "slider.horizontal.3"
-        case .updates: return "arrow.triangle.2.circlepath"
-        }
-    }
+
 }
 
-private struct HermesToggleStyle: ToggleStyle {
+struct HermesToggleStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
         Button {
             configuration.isOn.toggle()
@@ -77,17 +70,17 @@ struct SettingsPage: View {
                 ForEach(SettingsSection.allCases, id: \.self) { item in
                     Button { section = item } label: {
                         HStack(spacing: 9) {
-                            Image(systemName: item.icon).frame(width: 16)
+                            Rectangle().fill(item == section ? Theme.canvas : Theme.rule).frame(width: 2, height: 12)
                             Text(item.rawValue).font(.custom("Inter-Regular", size: 14)).fixedSize()
                             Spacer(minLength: 0)
-                        }.padding(10).contentShape(Rectangle())
+                        }.padding(10).contentShape(Rectangle()).textSelection(.disabled)
                     }.buttonStyle(.plain)
                      .foregroundColor(item == section ? Theme.canvas : Theme.ink)
                      .background(item == section ? Theme.ink : Color.clear)
                      .accessibilityAddTraits(item == section ? .isSelected : [])
                 }
                 Spacer()
-            }.padding(16).frame(width: 168)
+            }.padding(16).frame(width: 175)
             Rectangle().fill(Theme.rule).frame(width: 1)
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
