@@ -17,7 +17,11 @@ struct Connection: Codable {
 
 struct ConnectorError: LocalizedError {
     let errorDescription: String?
-    init(_ message: String) { errorDescription = message }
+    let integrationDenied: Bool
+    init(_ message: String, integrationDenied: Bool = false) {
+        errorDescription = message
+        self.integrationDenied = integrationDenied
+    }
 }
 
 private final class NoRedirect: NSObject, URLSessionTaskDelegate {
@@ -84,7 +88,8 @@ struct ConnectorAPI {
             let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             let detail = (payload?["errors"] as? [[String: Any]])?.compactMap { $0["message"] as? String }.first
                 ?? payload?["message"] as? String
-            throw ConnectorError("\(service.rawValue) (\(response.statusCode)): \(detail ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode))")
+            throw ConnectorError("\(service.rawValue) (\(response.statusCode)): \(detail ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode))",
+                                 integrationDenied: response.statusCode == 403 && detail?.localizedCaseInsensitiveContains("not accessible by integration") == true)
         }
         if service == .slack {
             struct Result: Decodable { let ok: Bool; let error: String? }
@@ -119,6 +124,18 @@ struct ConnectorAPI {
     struct Installation: Decodable, Identifiable {
         struct Account: Decodable { let login: String; let type: String }
         let id: Int; let account: Account
+        let permissions: [String: String]?
+
+        var settingsURL: URL? {
+            let prefix = account.type == "Organization" ? "/organizations/" + account.login : ""
+            return URL(string: "https://github.com" + prefix + "/settings/installations/" + String(id))
+        }
+
+        var missingCIReadAccess: [String]? {
+            guard let permissions else { return nil }
+            return [("actions", "Actions"), ("checks", "Checks"), ("statuses", "Commit statuses")]
+                .filter { !["read", "write", "admin"].contains(permissions[$0.0]) }.map { $0.1 }
+        }
     }
 
     func installations(_ token: String) async throws -> [Installation] {

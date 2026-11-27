@@ -22,6 +22,9 @@ struct RepoActivity {
 struct CheckCounts {
     var passed = 0, pending = 0, failed = 0, skipped = 0
 
+    var missingPermissions = [String]()
+    var unavailable = [String]()
+
     mutating func count(_ state: String) {
         switch state.lowercased() {
         case "success": passed += 1
@@ -32,9 +35,64 @@ struct CheckCounts {
     }
 
     var summary: String {
-        if passed + pending + failed + skipped == 0 { return "No checks reported" }
-        return ["\(passed) passed", "\(pending) pending", "\(failed) failed", skipped > 0 ? "\(skipped) skipped" : nil]
-            .compactMap { $0 }.joined(separator: " · ")
+        let counts = [(failed, "failed"), (pending, "pending"), (passed, "passed"), (skipped, "skipped")]
+            .filter { $0.0 > 0 }.map { "\($0.0) \($0.1)" }.joined(separator: ", ")
+        var parts = [String]()
+        if !counts.isEmpty { parts.append("Checks · " + counts) }
+        if !missingPermissions.isEmpty { parts.append("Read access needed · " + missingPermissions.joined(separator: ", ")) }
+        if !unavailable.isEmpty { parts.append(unavailable.joined(separator: ", ") + " unavailable") }
+        return parts.isEmpty ? "No checks reported" : parts.joined(separator: " · ")
+    }
+}
+
+struct PullReadiness: Decodable {
+    struct Count: Decodable { let totalCount: Int }
+    struct Opinions: Decodable {
+        struct Review: Decodable { let state: String }
+        let nodes: [Review]
+        let totalCount: Int
+    }
+    let headRefOid: String
+    let isDraft: Bool
+    let state: String
+    let mergeable: String
+    let mergeStateStatus: String
+    let reviewDecision: String?
+    let reviewRequests: Count
+    let latestOpinionatedReviews: Opinions
+    let comments: Count
+
+    var review: String {
+        let requested = reviewRequests.totalCount > 0
+        switch reviewDecision {
+        case "CHANGES_REQUESTED": return "Changes requested"
+        case "REVIEW_REQUIRED": return requested ? "Awaiting review" : "Review required"
+        case "APPROVED": return requested ? "Approved · Review requested" : "Approved"
+        default:
+            let opinions = latestOpinionatedReviews.nodes.map(\.state)
+            if opinions.contains("CHANGES_REQUESTED") { return "Changes requested" }
+            if requested { return "Review requested" }
+            if opinions.count < latestOpinionatedReviews.totalCount { return "Reviews submitted" }
+            if opinions.contains("APPROVED") { return "Approved" }
+            return comments.totalCount > 0 ? "Review commented" : "No active review"
+        }
+    }
+
+    var merge: String {
+        if state == "MERGED" { return "Merged" }
+        if state == "CLOSED" { return "Closed" }
+        if isDraft { return "Draft" }
+        if mergeable == "CONFLICTING" { return "Merge conflicts" }
+        switch mergeStateStatus {
+        case "DIRTY": return "Merge conflicts"
+        case "BEHIND": return "Branch behind base"
+        case "BLOCKED": return "Merge blocked"
+        case "UNSTABLE": return "Checks not passing"
+        case "HAS_HOOKS": return "Merge subject to hooks"
+        case "CLEAN" where mergeable == "MERGEABLE":
+            return ["CHANGES_REQUESTED", "REVIEW_REQUIRED"].contains(reviewDecision) ? "Merge blocked" : "Ready to merge"
+        default: return "Merge status pending"
+        }
     }
 }
 
@@ -71,27 +129,76 @@ extension ConnectorAPI {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    func pullReadiness(repo: String, pull: Pull, connection c: Connection) async throws -> PullReadiness {
+        _ = try repoPath(repo, c)
+        let query = """
+        query($org:String!, $repo:String!, $number:Int!) {
+          repository(owner:$org, name:$repo) { pullRequest(number:$number) {
+            headRefOid state isDraft mergeable mergeStateStatus reviewDecision
+            reviewRequests { totalCount }
+            latestOpinionatedReviews(first:100) { totalCount nodes { state } }
+            comments: reviews(first:1, states:[COMMENTED]) { totalCount }
+          } }
+        }
+        """
+        struct Response: Decodable {
+            struct DataObject: Decodable {
+                struct Repository: Decodable { let pullRequest: PullReadiness? }
+                let repository: Repository?
+            }
+            struct Issue: Decodable { let message: String }
+            let data: DataObject?
+            let errors: [Issue]?
+        }
+        let variables: [String: Any] = ["org": c.scopeID, "repo": repo, "number": pull.number]
+        let (bytes, _) = try await call(.github, "graphql", token: try await OAuthCredentials.shared.token(.github, c),
+                                        method: "POST", body: ["query": query, "variables": variables])
+        let result = try JSONDecoder().decode(Response.self, from: bytes)
+        guard result.errors == nil, let status = result.data?.repository?.pullRequest else {
+            throw ConnectorError(result.errors?.first?.message ?? "GitHub could not read this PR.")
+        }
+        guard status.headRefOid == pull.head.sha else { throw ConnectorError("Branch updated. Refresh the repository.") }
+        return status
+    }
+
     func checks(repo: String, pull: Pull, connection c: Connection) async throws -> CheckCounts {
         struct Run: Decodable { let id: Int; let status: String; let conclusion: String? }
         struct Runs: Decodable { let check_runs: [Run] }
         struct Status: Decodable { let context: String; let state: String }
         let path = try repoPath(repo, c) + "/commits/" + pull.head.sha
         var counts = CheckCounts(), ids = Set<Int>(), contexts = Set<String>()
-        var page = 1
-        while true {
-            let batch: Runs = try await github(path + "/check-runs?filter=latest&per_page=100&page=\(page)", c)
-            for run in batch.check_runs where ids.insert(run.id).inserted {
-                counts.count(run.conclusion ?? run.status)
+        func recordError(_ error: Error, source: String) {
+            if let error = error as? ConnectorError, error.integrationDenied {
+                counts.missingPermissions.append(source)
+            } else {
+                counts.unavailable.append(source)
             }
-            if batch.check_runs.count < 100 { break }
-            page += 1
         }
-        page = 1
-        while true {
-            let batch: [Status] = try await github(path + "/statuses?per_page=100&page=\(page)", c)
-            for status in batch where contexts.insert(status.context.lowercased()).inserted { counts.count(status.state) }
-            if batch.count < 100 { break }
-            page += 1
+        do {
+            var page = 1
+            while true {
+                let batch: Runs = try await github(path + "/check-runs?filter=latest&per_page=100&page=\(page)", c)
+                for run in batch.check_runs where ids.insert(run.id).inserted {
+                    counts.count(run.conclusion ?? run.status)
+                }
+                if batch.check_runs.count < 100 { break }
+                page += 1
+            }
+        } catch {
+            try Task.checkCancellation()
+            recordError(error, source: "Checks")
+        }
+        do {
+            var page = 1
+            while true {
+                let batch: [Status] = try await github(path + "/statuses?per_page=100&page=\(page)", c)
+                for status in batch where contexts.insert(status.context.lowercased()).inserted { counts.count(status.state) }
+                if batch.count < 100 { break }
+                page += 1
+            }
+        } catch {
+            try Task.checkCancellation()
+            recordError(error, source: "Commit statuses")
         }
         return counts
     }

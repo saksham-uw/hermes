@@ -61,6 +61,7 @@ struct RepositoryWorkspace: View {
     @Published var live = ""
     @Published var loading = false
     @Published var busy = false
+    @Published var reviewRevisions: [Int: Int] = [:]
     let api = ConnectorAPI()
     private var generation = UUID()
     private var lastLoaded: Date?
@@ -221,7 +222,7 @@ private struct RepoDetail: View {
                     let recent = data.recent().filter { $0.name != "main" && $0.name != "prod" }
                     LabelText(text: "Last 48 hours").foregroundColor(Theme.muted)
                     if recent.isEmpty { Text("No recent feature branches.").foregroundColor(Theme.muted) }
-                    VStack(spacing: 0) {
+                    LazyVStack(spacing: 0) {
                         ForEach(recent, id: \.name) { branch in
                             row(branch.name, data)
                         }
@@ -232,7 +233,7 @@ private struct RepoDetail: View {
                     }
                     if !older.isEmpty {
                         LabelText(text: "Other open pull requests").foregroundColor(Theme.muted)
-                        VStack(spacing: 0) {
+                        LazyVStack(spacing: 0) {
                             ForEach(older) { pull in if let head = pull.head.ref { row(head, data) } }
                         }
                     }
@@ -243,6 +244,9 @@ private struct RepoDetail: View {
                             Text("main → prod").font(Theme.display(18))
                             Spacer()
                             if let ahead { Text(ahead == 0 ? "Up to date" : "\(ahead) ahead").foregroundColor(Theme.muted) }
+                        }
+                        if let pull = data.pull(head: "main", base: "prod", fullName: github.scopeID + "/" + repo) {
+                            statusLine(pull)
                         }
                         lane("main", "prod", data)
                     } else { Text("Promotion requires main and prod branches.") }
@@ -286,15 +290,60 @@ private struct RepoDetail: View {
                     }
                 }.padding(.horizontal, 12).padding(.vertical, 11)
             }.modifier(ControlHover()).disabled(state.busy)
+            if let pull {
+                statusLine(pull).padding(.horizontal, 12).padding(.bottom, 9)
+            }
             if active { lane(name, "main", data).id(name) }
         }.background(active ? Theme.surface : Color.clear)
+    }
+
+    private func statusLine(_ pull: Pull) -> some View {
+        PullStatusLine(repo: repo, github: github, pull: pull, api: state.api)
+            .id("\(pull.number)/\(pull.head.sha)/\(revision)/\(state.reviewRevisions[pull.number, default: 0])")
     }
 
     private func lane(_ head: String, _ base: String, _ data: RepoActivity) -> some View {
         BranchWorkflow(repo: repo, head: head, base: base, github: github, slack: slack, state: state,
                        pull: data.pull(head: head, base: base, fullName: github.scopeID + "/" + repo),
                        hasBase: data.branches.contains { $0.name == base } && (base != "prod" || ahead != 0),
-                       revision: revision, settings: { settings(.workflow) })
+                       settings: { settings(.workflow) })
+    }
+}
+
+private struct PullStatusLine: View {
+    let repo: String
+    let github: Connection
+    let pull: Pull
+    let api: ConnectorAPI
+    @State private var readiness: PullReadiness?
+    @State private var readinessError: String?
+    @State private var checks: String?
+
+    var body: some View {
+        let decision = readiness.map { $0.review + "  ·  " + $0.merge }
+            ?? (readinessError == nil ? "Reading PR status…" : "Review and merge status unavailable")
+        Text(decision + "  |  " + (checks ?? "Reading checks…"))
+            .font(.custom("GeistMono-Regular", size: 11))
+            .foregroundColor(Theme.muted)
+            .fixedSize(horizontal: false, vertical: true)
+            .textSelection(.enabled)
+            .help(readinessError ?? "GitHub review decision, merge readiness, and checks for this revision.")
+            .task {
+                do {
+                    let value = try await api.pullReadiness(repo: repo, pull: pull, connection: github)
+                    if !Task.isCancelled { readiness = value }
+                } catch {
+                    if !Task.isCancelled { readinessError = error.localizedDescription }
+                }
+            }
+            .task {
+                do {
+                    let value = try await api.checks(repo: repo, pull: pull, connection: github)
+                    if !Task.isCancelled { checks = value.summary }
+                } catch {
+                    if !Task.isCancelled { checks = "Checks unavailable" }
+                }
+            }
     }
 }
 
@@ -307,9 +356,7 @@ private struct BranchWorkflow: View {
     @ObservedObject var state: RepositoryState
     let pull: Pull?
     let hasBase: Bool
-    let revision: Int
     let settings: () -> Void
-    @State private var checks = ""
     @State private var feedback = ""
     @State private var working = false
     @State private var editing = false
@@ -333,7 +380,6 @@ private struct BranchWorkflow: View {
                     Spacer()
                     actionButton("GitHub ↗") { NSWorkspace.shared.open(url(pull)) }
                 }
-                Text(checks.isEmpty ? "Loading checks…" : checks).font(.custom("GeistMono-Regular", size: 11)).foregroundColor(Theme.muted)
             } else if base == "main" { Text("Pull request into main").foregroundColor(Theme.muted) }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { actions }
@@ -362,18 +408,6 @@ private struct BranchWorkflow: View {
             }
         }.padding(14).frame(maxWidth: .infinity, alignment: .leading)
         .background(Theme.surface)
-        .task(id: "\(pull?.head.sha ?? "")/\(pull?.number ?? 0)/\(revision)") {
-            guard let pull else { checks = ""; return }
-            do {
-                let result = try await state.api.checks(repo: repo, pull: pull, connection: github)
-                try Task.checkCancellation()
-                checks = result.summary
-            } catch {
-                if !Task.isCancelled {
-                    checks = error.localizedDescription.contains("(403)") ? "Checks unavailable · grant Checks and Commit statuses read access." : error.localizedDescription
-                }
-            }
-        }
     }
 
     private func merge(_ pull: Pull) {
@@ -392,6 +426,7 @@ private struct BranchWorkflow: View {
                 let users = reviewers
                 perform {
                     try await state.api.requestReview(repo: repo, pull: pull, users: users, connection: github)
+                    state.reviewRevisions[pull.number, default: 0] += 1
                     return "Requested review from " + users.joined(separator: ", ") + "."
                 }
             }.help("Request or re-request review from " + reviewers.joined(separator: ", "))
@@ -413,7 +448,10 @@ private struct BranchWorkflow: View {
                     let created = try await state.api.ensurePull(repo: repo, head: head, base: base, connection: github)
                     state.remember(created, replacing: created.number)
                     if !users.isEmpty {
-                        do { try await state.api.requestReview(repo: repo, pull: created, users: users, connection: github) }
+                        do {
+                            try await state.api.requestReview(repo: repo, pull: created, users: users, connection: github)
+                            state.reviewRevisions[created.number, default: 0] += 1
+                        }
                         catch { return "PR #\(created.number) is open. Review request failed. " + error.localizedDescription }
                     }
                     return users.isEmpty ? "PR #\(created.number) is open." : "PR #\(created.number) is open. Requested " + users.joined(separator: ", ") + "."

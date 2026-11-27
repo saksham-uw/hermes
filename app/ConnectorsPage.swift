@@ -201,6 +201,15 @@ private struct GitHubRepositorySelection: View {
             } else {
                 HermesChoices(title: installations.first(where: { $0.id == installationID })?.account.login ?? "Choose account",
                               items: installations, label: { $0.account.login }) { installationID = $0.id }
+                if let installation = installations.first(where: { $0.id == installationID }),
+                   let missing = installation.missingCIReadAccess {
+                    Text(missing.isEmpty ? "Actions, checks and commit statuses enabled" :
+                            "Read access needed · " + missing.joined(separator: ", "))
+                        .font(.custom("GeistMono-Regular", size: 12)).foregroundColor(Theme.muted)
+                    if !missing.isEmpty, let url = installation.settingsURL {
+                        actionButton("Review installation permissions ↗") { awaitingGitHub = NSWorkspace.shared.open(url) }
+                    }
+                }
                 if loadedInstallation != installationID || installationID == nil {
                     LoadingMark(title: "Loading repositories…")
                 } else if !repoError.isEmpty {

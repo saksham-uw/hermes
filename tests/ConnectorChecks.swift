@@ -5,6 +5,12 @@ private final class Stub: URLProtocol, @unchecked Sendable {
     static var calls = 0
     static var race = false
     static var created = 0
+    static var checkAccess = true
+    static var statusCode = 200
+    static var reviewDecision: String? = "APPROVED"
+    static var mergeState = "CLEAN"
+    static var pendingReviews = 0
+    static var isDraft = false
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -46,8 +52,11 @@ private final class Stub: URLProtocol, @unchecked Sendable {
             payload = ["ok":true,"channel":["id":"D123"]]
         case ("GET", "/repos/demo/project/commits/expected/check-runs"):
             payload = ["check_runs":[["id":1,"status":"completed","conclusion":"success"],["id":2,"status":"in_progress"]]]
+            if !Self.checkAccess { status = 403; payload = ["message":"Resource not accessible by integration"] }
         case ("GET", "/repos/demo/project/commits/expected/statuses"):
             payload = [["context":"lint","state":"failure"],["context":"lint","state":"pending"]]
+            status = Self.statusCode
+            if status != 200 { payload = ["message": status == 403 ? "Resource not accessible by integration" : "Try later"] }
         case ("GET", "/user"): payload = ["login": "test-user"]
         case ("GET", "/user/installations"):
             payload = ["installations": [["id": 42, "account": ["type":"Organization","login":"demo"]], ["id":43,"account":["type":"User","login":"other"]]]]
@@ -58,6 +67,18 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         case ("GET", "/api/users.conversations"):
             payload = ["ok": true, "channels":[["id":"C123","name":"general","is_archived":false]]]
         case ("POST", "/graphql"):
+            if (body["query"] as? String)?.contains("pullRequest(number:") == true {
+                let vars = body["variables"] as! [String: Any]
+                precondition(vars["number"] as? Int == 3 && vars["repo"] as? String == "project")
+                let info: [String: Any] = [
+                    "state": "OPEN", "headRefOid": "expected", "isDraft": Self.isDraft, "mergeable": "MERGEABLE",
+                    "mergeStateStatus": Self.mergeState, "reviewDecision": Self.reviewDecision as Any,
+                    "reviewRequests": ["totalCount": Self.pendingReviews], "comments": ["totalCount": 0],
+                    "latestOpinionatedReviews": ["totalCount": 1, "nodes": [["state": "APPROVED"]]]
+                ]
+                payload = ["data": ["repository": ["pullRequest": info]]]
+                break
+            }
             let vars = body["variables"] as! [String: String]
             precondition(vars["repo"] == "project" && vars["org"] == "demo")
             let first = vars["after"] == nil
@@ -128,6 +149,32 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         precondition(promotion.number == 4 && Stub.created == 2)
         let checks = try await api.checks(repo:"project", pull:p, connection:github)
         precondition(checks.passed == 1 && checks.pending == 1 && checks.failed == 1)
+        Stub.statusCode = 403
+        let partial = try await api.checks(repo: "project", pull: p, connection: github)
+        precondition(partial.passed == 1 && partial.pending == 1 && partial.missingPermissions == ["Commit statuses"])
+        Stub.checkAccess = false
+        let denied = try await api.checks(repo: "project", pull: p, connection: github)
+        precondition(denied.summary == "Read access needed · Checks, Commit statuses")
+        Stub.statusCode = 503
+        let outage = try await api.checks(repo: "project", pull: p, connection: github)
+        precondition(outage.summary.contains("Commit statuses unavailable"))
+        precondition(CheckCounts().summary == "No checks reported")
+
+        func readiness() async throws -> PullReadiness { try await api.pullReadiness(repo: "project", pull: p, connection: github) }
+        let approved = try await readiness()
+        precondition(approved.review == "Approved" && approved.merge == "Ready to merge")
+        Stub.mergeState = "BLOCKED"; Stub.reviewDecision = "REVIEW_REQUIRED"
+        let required = try await readiness()
+        precondition(required.review == "Review required" && required.merge == "Merge blocked")
+        Stub.reviewDecision = "CHANGES_REQUESTED"; Stub.mergeState = "DIRTY"
+        let conflicts = try await readiness()
+        precondition(conflicts.review == "Changes requested" && conflicts.merge == "Merge conflicts")
+        Stub.reviewDecision = nil; Stub.mergeState = "UNKNOWN"; Stub.pendingReviews = 1
+        let rerequested = try await readiness()
+        precondition(rerequested.review == "Review requested" && rerequested.merge == "Merge status pending")
+        Stub.pendingReviews = 0; Stub.isDraft = true
+        let draft = try await readiness()
+        precondition(draft.review == "Approved" && draft.merge == "Draft")
         let boundary = ISO8601DateFormatter().date(from: "2025-02-03T00:00:00Z")!
         let activity = RepoActivity(branches: branches, pulls: pulls)
         precondition(activity.recent(at: boundary).map(\.name) == ["new"])
