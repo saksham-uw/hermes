@@ -36,12 +36,14 @@ struct LabelText: View {
 
 struct ActionStyle: ButtonStyle {
     var primary = false
+    @Environment(\.isEnabled) private var isEnabled
+    init(primary: Bool = false) { self.primary = primary }
     func makeBody(configuration: Configuration) -> some View {
         configuration.label.padding(.horizontal, 14).frame(minHeight: 34)
             .foregroundColor(primary ? Theme.canvas : Theme.ink)
             .background(primary ? Theme.ink : Theme.surface)
             .overlay(Rectangle().strokeBorder(primary ? Theme.ink : Theme.rule))
-            .opacity(configuration.isPressed ? 0.66 : 1)
+            .opacity(isEnabled ? (configuration.isPressed ? 0.66 : 1) : 0.45)
             .contentShape(Rectangle())
     }
 }

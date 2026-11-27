@@ -7,11 +7,12 @@ enum Service: String, CaseIterable, Identifiable, Codable {
 
 struct Connection: Codable {
     let user: String
-    let scope: String // Slack workspace name or GitHub organization
-    let scopeID: String
-    let repos: [String]
+    var scope: String // Slack workspace name or GitHub repository owner
+    var scopeID: String
+    var repos: [String]
     var token: String
     var grant: OAuthGrant? = nil
+    var installURL: URL? = nil
 }
 
 struct ConnectorError: LocalizedError {
@@ -109,7 +110,7 @@ struct ConnectorAPI {
         while true {
             let (data, _) = try await call(.github, "user/installations?per_page=100&page=\(page)", token: token)
             let rows = try JSONDecoder().decode(Page.self, from: data).installations
-            all += rows.filter { $0.account.type == "Organization" }
+            all += rows.filter { ["Organization", "User"].contains($0.account.type) && validName($0.account.login) }
             if rows.count < 100 { return all }
             page += 1
         }

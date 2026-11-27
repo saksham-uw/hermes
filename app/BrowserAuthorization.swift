@@ -4,6 +4,14 @@ import CryptoKit
 @MainActor
 final class BrowserAuthorization: NSObject, ASWebAuthenticationPresentationContextProviding {
     private var session: ASWebAuthenticationSession?
+    private var waiting: CheckedContinuation<URL, Error>?
+
+    private func finish(_ result: Result<URL, Error>) {
+        waiting?.resume(with: result)
+        waiting = nil
+        session = nil
+    }
+
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         NSApp.keyWindow ?? NSApp.windows.first!
     }
@@ -28,16 +36,27 @@ final class BrowserAuthorization: NSObject, ASWebAuthenticationPresentationConte
         let verifier = random(), nonce = random()
         let challenge = Self.encode(Data(SHA256.hash(data: Data(verifier.utf8))))
         let url = OAuthServer.endpoint(provider, "start", extra: [.init(name: "nonce", value: nonce), .init(name: "challenge", value: challenge)])
-        let callback: URL = try await withCheckedThrowingContinuation { continuation in
-            let browser = ASWebAuthenticationSession(url: url, callbackURLScheme: "com.sakshamuw.hermes.auth") { url, _ in
-                if let url { continuation.resume(returning: url) }
-                else { continuation.resume(throwing: ConnectorError("Sign-in was cancelled.")) }
+        let callback: URL = try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await withCheckedThrowingContinuation { continuation in
+                waiting = continuation
+                let browser = ASWebAuthenticationSession(url: url, callbackURLScheme: "com.sakshamuw.hermes.auth") { url, _ in
+                    Task { @MainActor in
+                        if let url { self.finish(.success(url)) }
+                        else { self.finish(.failure(ConnectorError("Sign-in was cancelled."))) }
+                    }
+                }
+                browser.presentationContextProvider = self
+                session = browser
+                if !browser.start() { finish(.failure(ConnectorError("Could not open the authorization window."))) }
             }
-            browser.presentationContextProvider = self
-            session = browser
-            if !browser.start() { continuation.resume(throwing: ConnectorError("Could not open the authorization window.")) }
+        } onCancel: {
+            Task { @MainActor in
+                self.session?.cancel()
+                self.finish(.failure(CancellationError()))
+            }
         }
-        session = nil
+        try Task.checkCancellation()
         let ticket = try Self.ticket(callback, nonce: nonce)
         let data = try await OAuthServer.request(provider, "exchange", ["ticket": ticket, "verifier": verifier])
         return try JSONDecoder().decode(TokenResponse.self, from: data)

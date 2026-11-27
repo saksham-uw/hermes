@@ -39,6 +39,8 @@ private final class Stub: URLProtocol, @unchecked Sendable {
             payload = ["installations": [["id": 42, "account": ["type":"Organization","login":"demo"]], ["id":43,"account":["type":"User","login":"other"]]]]
         case ("GET", "/user/installations/42/repositories"):
             payload = ["repositories":[["name":"project","full_name":"demo/project"],["name":"outside","full_name":"other/outside"]]]
+        case ("GET", "/user/installations/43/repositories"):
+            payload = ["repositories":[["name":"personal","full_name":"other/personal"]]]
         case ("GET", "/api/users.conversations"):
             payload = ["ok": true, "channels":[["id":"C123","name":"general","is_archived":false]]]
         case ("POST", "/graphql"):
@@ -82,9 +84,11 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         precondition(channels.map(\.id) == ["C123"])
         let token = "github_pat_test"
         let installs = try await api.installations(token)
-        precondition(installs.map(\.id) == [42])
+        precondition(installs.map(\.id) == [42, 43])
         let repos = try await api.repositories(installs[0], token: token)
         precondition(repos == ["project"])
+        let personalRepos = try await api.repositories(installs[1], token: token)
+        precondition(personalRepos == ["personal"])
         let github = Connection(user: try await api.githubUser(token), scope: "demo", scopeID: "demo", repos: repos, token: token)
         let previous = Stub.calls
         do { _ = try await api.openPulls("another", github); fatalError("Accepted unselected repo") } catch is ConnectorError {}
@@ -98,7 +102,18 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         try await api.merge(repo: "project", pull: p, method: "squash", connection: github)
 
         let store = ConnectionStore(serviceName: "hermes.connector-test." + UUID().uuidString)
-        defer { try? store.forget(.slack) }
+        defer { try? store.forget(.slack); try? store.forget(.github) }
+        let account = Connection(user: github.user, scope: "", scopeID: "", repos: [], token: token,
+                                 grant: OAuthGrant(), installURL: URL(string: "https://github.com/apps/test/installations/new"))
+        try store.save(account, for: .github)
+        let reopened = ConnectionStore(serviceName: store.serviceName)
+        let restored = try reopened.read(.github)
+        precondition(restored?.grant?.id == account.grant?.id && restored?.installURL == account.installURL && restored?.repos == [])
+        var configured = account
+        configured.scopeID = "demo"; configured.scope = "demo"; configured.repos = repos
+        try reopened.save(configured, for: .github)
+        let selected = try store.read(.github)
+        precondition(selected?.repos == ["project"] && selected?.grant?.id == account.grant?.id)
         try store.save(slack, for: .slack)
         let saved = try store.read(.slack)
         precondition(saved?.token == slack.token)

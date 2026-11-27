@@ -46,7 +46,7 @@ final class OAuthCredentials {
     func token(_ service: Service, _ connection: Connection) async throws -> String {
         guard let grant = connection.grant else { return connection.token } // Existing manual connections.
         let store = ConnectionStore()
-        guard var current = try store.read(service), var saved = current.grant, saved.id == grant.id else {
+        guard let current = try store.read(service), var saved = current.grant, saved.id == grant.id else {
             throw ConnectorError("Connection changed. Reopen Connectors.")
         }
         guard let expires = saved.expires, expires.timeIntervalSinceNow < 90 else { return current.token }
@@ -55,7 +55,7 @@ final class OAuthCredentials {
         let task = Task<String, Error> {
             let data = try await OAuthServer.request(service, "refresh", ["refresh": refresh])
             let response = try JSONDecoder().decode(TokenResponse.self, from: data)
-            guard try store.read(service)?.grant?.id == saved.id else { throw ConnectorError("Connection changed during renewal.") }
+            guard var current = try store.read(service), current.grant?.id == saved.id else { throw ConnectorError("Connection changed during renewal.") }
             current.token = response.token
             saved.refresh = response.refresh ?? refresh
             saved.expires = response.grant.expires
