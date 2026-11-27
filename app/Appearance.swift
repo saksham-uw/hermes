@@ -84,7 +84,9 @@ struct HermesWindow: View {
                 Rectangle().fill(Theme.rule).frame(height: 1)
                 switch tab {
                 case .workspace:
-                    WorkspaceCanvas(showGrid: showGrid)
+                    RepositoryWorkspace(showGrid: showGrid) { destination in
+                        section = destination; tab = .settings
+                    }
                 case .settings:
                     SettingsPage(section: $section, showGrid: $showGrid, updates: updatePreferences, version: version, check: check)
                 }
@@ -130,7 +132,7 @@ struct HermesWindow: View {
     }
 }
 
-private struct WorkspaceCanvas: View {
+struct WorkspaceCanvas: View {
     let showGrid: Bool
     private static let artwork = Bundle.main.url(forResource: "ascii-font", withExtension: "txt")
         .flatMap { try? String(contentsOf: $0, encoding: .utf8) }?.trimmingCharacters(in: .newlines) ?? "HERMES"
@@ -153,6 +155,6 @@ private struct WorkspaceCanvas: View {
                     .fixedSize().frame(width: proxy.size.width, height: proxy.size.height)
                     .accessibilityLabel("HERMES")
             }
-        }.background(Theme.surface).overlay(Rectangle().strokeBorder(Theme.rule)).padding(24)
+        }.background(Theme.surface).overlay(Rectangle().strokeBorder(Theme.rule))
     }
 }

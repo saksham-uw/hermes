@@ -1,6 +1,6 @@
 # HERMES
 
-HERMES is a standalone macOS app that displays the wordmark in `ascii-font.txt`. Download the universal build for macOS 13 and later from [the HERMES download page](https://hermes-mac-saksham.vercel.app). Unzip it and move HERMES.app into Applications before opening it. The first release is ad-hoc signed. If Gatekeeper blocks it, use **System Settings → Privacy & Security → Open Anyway** after attempting to open the app.
+HERMES is a macOS workspace for the repositories you select in Settings → Connectors. Repository cards show recent branch activity, open PRs and production image tags. Open a card to prepare a branch → main or main → prod PR, request review, inspect checks or send its link in a Slack direct message. Download the universal build for macOS 13 and later from [the HERMES download page](https://hermes-mac-saksham.vercel.app). Unzip it and move HERMES.app into Applications before opening it. The first release is ad-hoc signed. If Gatekeeper blocks it, use **System Settings → Privacy & Security → Open Anyway** after attempting to open the app.
 
 ## Updates and releases
 

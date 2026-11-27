@@ -49,7 +49,7 @@ export default async function handler(req, res) {
       const state = seal({ kind:'start', nonce:q.nonce, challenge:q.challenge, expires:Date.now()+600000 },key);
       const url = new URL(provider.authorize);
       url.search = new URLSearchParams({ client_id:id, redirect_uri:redirect, state });
-      if (name === 'slack') url.searchParams.set('user_scope','chat:write,channels:read,groups:read');
+      if (name === 'slack') url.searchParams.set('user_scope','chat:write,channels:read,groups:read,users:read,im:write');
       else {
         url.searchParams.set('code_challenge',q.challenge);
         url.searchParams.set('code_challenge_method','S256');

@@ -20,12 +20,14 @@ final class UpdatePreferences: ObservableObject {
 enum SettingsSection: String, CaseIterable {
     case appearance = "Appearance"
     case connectors = "Connectors"
+    case workflow = "Workflow defaults"
     case updates = "Updates"
 
     var icon: String {
         switch self {
         case .appearance: return "circle.lefthalf.filled"
         case .connectors: return "link"
+        case .workflow: return "slider.horizontal.3"
         case .updates: return "arrow.triangle.2.circlepath"
         }
     }
@@ -93,9 +95,11 @@ struct SettingsPage: View {
                     Rectangle().fill(Theme.rule).frame(height: 1)
                     switch section {
                     case .appearance:
-                        preference("Workspace grid", "Show the dot grid behind the HERMES wordmark.", enabled: $showGrid)
+                        preference("Workspace grid", "Show the dot grid in Workspace.", enabled: $showGrid)
                     case .connectors:
                         ConnectorsPage()
+                    case .workflow:
+                        WorkflowDefaultsPage()
                     case .updates:
                         preference("Automatic update checks", "Check for new releases when HERMES opens and hourly while it’s running.",
                                    enabled: Binding(get: { updates.automaticChecks }, set: updates.setAutomaticChecks))

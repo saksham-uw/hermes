@@ -26,10 +26,16 @@ private final class NoRedirect: NSObject, URLSessionTaskDelegate {
 }
 
 struct Pull: Decodable, Identifiable {
-    struct Branch: Decodable { let sha: String }
+    struct Branch: Decodable {
+        struct Repo: Decodable { let full_name: String }
+        let sha: String
+        let ref: String?
+        let repo: Repo?
+    }
     let number: Int
     let title: String
     let head: Branch
+    let base: Branch?
     var id: Int { number }
 }
 
@@ -50,8 +56,8 @@ struct ConnectorAPI {
     private let session: URLSession
     init(session: URLSession? = nil) { self.session = session ?? Self.liveSession }
 
-    private func call(_ service: Service, _ path: String, token: String, method: String = "GET",
-                      body: [String: Any]? = nil) async throws -> (Data, HTTPURLResponse) {
+    func call(_ service: Service, _ path: String, token: String, method: String = "GET",
+                      body: [String: Any]? = nil, downloadLog: Bool = false) async throws -> (Data, HTTPURLResponse) {
         let origin = service == .slack ? "https://slack.com/api/" : "https://api.github.com/"
         guard let url = URL(string: origin + path) else { throw ConnectorError("Invalid request.") }
         var req = URLRequest(url: url)
@@ -65,8 +71,19 @@ struct ConnectorAPI {
         }
         let (data, raw) = try await session.data(for: req)
         guard let response = raw as? HTTPURLResponse else { throw ConnectorError("No response from " + service.rawValue + ".") }
+        if downloadLog, response.statusCode == 302,
+           let location = response.value(forHTTPHeaderField: "Location"), let url = URL(string: location), url.scheme == "https" {
+            // Actions signs the download URL. The GitHub bearer credential stays on api.github.com.
+            let (log, redirected) = try await session.data(from: url)
+            guard let http = redirected as? HTTPURLResponse, http.statusCode == 200 else {
+                throw ConnectorError("The production build log is unavailable.")
+            }
+            return (log, http)
+        }
         guard (200...299).contains(response.statusCode) else {
-            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["message"] as? String
+            let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            let detail = (payload?["errors"] as? [[String: Any]])?.compactMap { $0["message"] as? String }.first
+                ?? payload?["message"] as? String
             throw ConnectorError("\(service.rawValue) (\(response.statusCode)): \(detail ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode))")
         }
         if service == .slack {
@@ -155,7 +172,7 @@ struct ConnectorAPI {
         return rows.sorted { $0.name < $1.name }
     }
 
-    private func repoPath(_ repo: String, _ c: Connection) throws -> String {
+    func repoPath(_ repo: String, _ c: Connection) throws -> String {
         guard validName(c.scopeID), validName(repo), c.repos.contains(repo) else { throw ConnectorError("Repository is outside this connection.") }
         return "repos/\(c.scopeID)/\(repo)"
     }

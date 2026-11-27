@@ -1,8 +1,10 @@
 import Foundation
 
-/// Run on macOS: swiftc app/ConnectorAPI.swift app/ConnectionStore.swift app/OAuthCredentials.swift tests/ConnectorChecks.swift -o /tmp/hermes-connector-checks && /tmp/hermes-connector-checks
+/// Run on macOS: swiftc app/ConnectorAPI.swift app/ConnectionStore.swift app/OAuthCredentials.swift app/RepositoryWorkflow.swift app/ProductionRuntime.swift tests/ConnectorChecks.swift -o /tmp/hermes-connector-checks && /tmp/hermes-connector-checks
 private final class Stub: URLProtocol, @unchecked Sendable {
     static var calls = 0
+    static var race = false
+    static var created = 0
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
     override func startLoading() {
@@ -26,14 +28,26 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         } else {
             precondition(url.host == "api.github.com" && token == "Bearer github_pat_test")
         }
-        let pull: [String: Any] = ["number": 3, "title": "Review this", "head": ["sha": "expected"]]
+        var status = 200
+        let pull: [String: Any] = ["number": 3, "title": "Review this", "head": ["sha":"expected","ref":"new","repo":["full_name":"demo/project"]], "base":["ref":"main","sha":"base"]]
+        let promotion: [String: Any] = ["number": 4, "title":"Release", "head":["sha":"mainsha","ref":"main","repo":["full_name":"demo/project"]], "base":["ref":"prod","sha":"prodsha"]]
         switch (request.httpMethod, url.path) {
         case ("POST", "/api/auth.test"):
             headers["X-OAuth-Scopes"] = "chat:write"
             payload = ["ok": true, "user": "test-user", "user_id": "U123", "team": "Workspace", "team_id": "T123"]
         case ("POST", "/api/chat.postMessage"):
-            precondition(body["channel"] as? String == "C123" && body["text"] as? String == "hello" && body["username"] == nil)
+            if body["channel"] as? String == "D123" {
+                precondition(body["text"] as? String == "https://github.com/demo/project/pull/3")
+            } else { precondition(body["channel"] as? String == "C123" && body["text"] as? String == "hello") }
+            precondition(body["username"] == nil)
             payload = ["ok": true]
+        case ("POST", "/api/conversations.open"):
+            precondition(body["users"] as? String == "U123")
+            payload = ["ok":true,"channel":["id":"D123"]]
+        case ("GET", "/repos/demo/project/commits/expected/check-runs"):
+            payload = ["check_runs":[["id":1,"status":"completed","conclusion":"success"],["id":2,"status":"in_progress"]]]
+        case ("GET", "/repos/demo/project/commits/expected/statuses"):
+            payload = [["context":"lint","state":"failure"],["context":"lint","state":"pending"]]
         case ("GET", "/user"): payload = ["login": "test-user"]
         case ("GET", "/user/installations"):
             payload = ["installations": [["id": 42, "account": ["type":"Organization","login":"demo"]], ["id":43,"account":["type":"User","login":"other"]]]]
@@ -50,10 +64,16 @@ private final class Stub: URLProtocol, @unchecked Sendable {
             let branch = ["name": first ? "old" : "new", "target": ["committedDate": first ? "2024-01-01T00:00:00Z" : "2025-02-01T00:00:00Z"]] as [String: Any]
             let page: [String: Any] = ["hasNextPage": first, "endCursor": "next"]
             payload = ["data": ["repository": ["refs": ["pageInfo": page, "nodes": [branch]]]]]
-        case ("GET", "/repos/demo/project/pulls"): payload = [pull]
+        case ("GET", "/repos/demo/project/pulls"): payload = Self.race && Self.created > 1 ? [pull, promotion] : [pull]
         case ("POST", "/repos/demo/project/pulls"):
-            precondition(body["head"] as? String == "new" && body["base"] as? String == "main")
-            payload = pull
+            Self.created += 1
+            if Self.race {
+                precondition(body["head"] as? String == "main" && body["base"] as? String == "prod")
+                status = 422; payload = ["message":"Already open"]
+            } else {
+                precondition(body["head"] as? String == "new" && body["base"] as? String == "main")
+                payload = pull
+            }
         case ("POST", "/repos/demo/project/pulls/3/requested_reviewers"):
             precondition(body["reviewers"] as? [String] == ["reviewer"])
             payload = pull
@@ -63,7 +83,7 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         default: fatalError("Unexpected request")
         }
         Self.calls += 1
-        let response = HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: headers)!
+        let response = HTTPURLResponse(url: url, statusCode: status, httpVersion: nil, headerFields: headers)!
         client!.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
         client!.urlProtocol(self, didLoad: try! JSONSerialization.data(withJSONObject: payload))
         client!.urlProtocolDidFinishLoading(self)
@@ -100,6 +120,28 @@ private final class Stub: URLProtocol, @unchecked Sendable {
         let p = try await api.createPull(repo: "project", head: "new", base: "main", title: "Review this", connection: github)
         try await api.requestReview(repo: "project", pull: p, users: ["reviewer"], connection: github)
         try await api.merge(repo: "project", pull: p, method: "squash", connection: github)
+
+        let reused = try await api.ensurePull(repo: "project", head: "new", base: "main", connection: github)
+        precondition(reused.number == 3 && Stub.created == 1)
+        Stub.race = true
+        let promotion = try await api.ensurePull(repo: "project", head: "main", base: "prod", connection: github)
+        precondition(promotion.number == 4 && Stub.created == 2)
+        let checks = try await api.checks(repo:"project", pull:p, connection:github)
+        precondition(checks.passed == 1 && checks.pending == 1 && checks.failed == 1)
+        let boundary = ISO8601DateFormatter().date(from: "2025-02-03T00:00:00Z")!
+        let activity = RepoActivity(branches: branches, pulls: pulls)
+        precondition(activity.recent(at: boundary).map(\.name) == ["new"])
+        precondition(activity.recent(at: boundary.addingTimeInterval(1)).isEmpty)
+        precondition(activity.pull(head:"new", base:"main", fullName:"another/project") == nil)
+        let link = URL(string:"https://github.com/demo/project/pull/3")!
+        try await api.sendPR(link, recipient:"U123", connection:slack)
+        try await api.sendPR(link, recipient:"https://app.slack.com/client/T1/D123", connection:slack)
+        precondition(ConnectorAPI.recipientID("C123") == nil)
+        let digest = String(repeating: "a", count: 64)
+        let log = "pushing manifest for registry/project:prod-123@sha256:" + digest
+        precondition(ConnectorAPI.publishedReferences(in: log) == ["project:prod-123"])
+        precondition(ConnectorAPI.publishedReferences(in: "build --tag project:wrong").isEmpty)
+        precondition(ProductionRuntime.images(for:"project", in:"registry/project-api:live\nregistry/unrelated:wrong") == ["project-api:live"])
 
         let store = ConnectionStore(serviceName: "hermes.connector-test." + UUID().uuidString)
         defer { try? store.forget(.slack); try? store.forget(.github) }

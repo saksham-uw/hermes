@@ -3,7 +3,7 @@
   "url": "https://hermes-mac-saksham.vercel.app",
   "public": true,
   "callback_urls": ["https://hermes-mac-saksham.vercel.app/auth/github/callback"],
-  "default_permissions": {"metadata": "read", "contents": "write", "pull_requests": "write"},
+  "default_permissions": {"actions": "read", "checks": "read", "statuses": "read", "metadata": "read", "contents": "write", "pull_requests": "write"},
   "default_events": [],
   "request_oauth_on_install": false
 }

@@ -28,6 +28,10 @@ for (const provider of ['github','slack']) {
     const start=await request(provider,'start',{challenge,nonce});
     assert.equal(start.code,302);
     assert.equal(start.url.hostname,provider==='slack'?'slack.com':'github.com');
+    if (provider === 'slack') {
+      const scopes = start.url.searchParams.get('user_scope').split(',');
+      for (const scope of ['chat:write', 'users:read', 'im:write']) assert.ok(scopes.includes(scope));
+    }
     const state=start.url.searchParams.get('state');
     const tampered=await request(provider,'callback',{state:'invalid',code:'accepted'});assert.equal(tampered.code,400);
     const callback=await request(provider,'callback',{state,code:'accepted'});

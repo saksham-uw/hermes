@@ -11,3 +11,11 @@ The linked Vercel project hosts the token exchange. Use a signed-in Vercel CLI. 
 The callbacks are `https://hermes-mac-saksham.vercel.app/auth/slack/callback` and `https://hermes-mac-saksham.vercel.app/auth/github/callback`. Keep client secrets in Vercel. The Mac receives a short-lived ticket bound to its locally generated verifier, exchanges it over HTTPS, and stores the resulting user credentials in Keychain. Existing manual connections continue working. Reconnect once to switch to browser authorization.
 
 Run `node --test tests/OAuthBroker.test.mjs` to exercise the authorization handshake with fixture provider responses.
+
+## Workspace permissions in v0.2.0
+
+For an existing GitHub App, add read access to Actions, Checks and Commit statuses, then approve the updated installation on GitHub. The existing Contents and Pull requests permissions cover branch discovery, PR creation and review requests. Workspace reads branch tip commit dates to determine activity in the previous 48 hours.
+
+For Slack's member picker and opening one-to-one DMs, enable the user scopes `users:read` and `im:write` and reconnect Slack once. Existing user grants with `chat:write` can send a PR to an existing direct-message link or D-prefixed conversation ID. Set reviewers and the Slack recipient together under Settings → Workflow defaults.
+
+Workspace reads registry pushes from successful GitHub Actions jobs on the prod branch. To see the images actually running on a Docker host, enter its configured Docker CLI context in Workflow defaults. HERMES reads running containers whose image repository equals the connected repo name or begins with its name followed by a hyphen.
