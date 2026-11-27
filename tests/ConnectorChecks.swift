@@ -162,24 +162,30 @@ private final class Stub: URLProtocol, @unchecked Sendable {
 
         func readiness() async throws -> PullReadiness { try await api.pullReadiness(repo: "project", pull: p, connection: github) }
         let approved = try await readiness()
-        precondition(approved.review == "Approved" && approved.merge == "Ready to merge")
+        precondition(approved.review == .approved && approved.merge == .ready)
         Stub.mergeState = "BLOCKED"; Stub.reviewDecision = "REVIEW_REQUIRED"
         let required = try await readiness()
-        precondition(required.review == "Review required" && required.merge == "Merge blocked")
+        precondition(required.review == .required && required.merge == .blocked)
         Stub.reviewDecision = "CHANGES_REQUESTED"; Stub.mergeState = "DIRTY"
         let conflicts = try await readiness()
-        precondition(conflicts.review == "Changes requested" && conflicts.merge == "Merge conflicts")
+        precondition(conflicts.review == .changes && conflicts.merge == .conflicts)
         Stub.reviewDecision = nil; Stub.mergeState = "UNKNOWN"; Stub.pendingReviews = 1
         let rerequested = try await readiness()
-        precondition(rerequested.review == "Review requested" && rerequested.merge == "Merge status pending")
+        precondition(rerequested.review == .requested && rerequested.merge == .unknown)
         Stub.pendingReviews = 0; Stub.isDraft = true
         let draft = try await readiness()
-        precondition(draft.review == "Approved" && draft.merge == "Draft")
+        precondition(draft.review == .approved && draft.merge == .draft)
         let boundary = ISO8601DateFormatter().date(from: "2025-02-03T00:00:00Z")!
         let activity = RepoActivity(branches: branches, pulls: pulls)
         precondition(activity.recent(at: boundary).map(\.name) == ["new"])
         precondition(activity.recent(at: boundary.addingTimeInterval(1)).isEmpty)
         precondition(activity.pull(head:"new", base:"main", fullName:"another/project") == nil)
+        let mixed = RepoActivity(branches: branches, pulls: [p, promotion])
+        let queue = mixed.mainQueue(fullName: "DEMO/project", at: boundary)
+        precondition(queue.map(\.id) == ["section:open", "head:new", "section:branches"])
+        let unmatched = RepoActivity(branches: branches, pulls: [promotion])
+        precondition(unmatched.mainQueue(fullName: "demo/project", at: boundary).map(\.id) == ["section:open", "section:branches", "head:new"])
+        precondition(mixed.mainQueue(fullName: "demo/project", at: boundary.addingTimeInterval(1)).map(\.id) == queue.map(\.id))
         let link = URL(string:"https://github.com/demo/project/pull/3")!
         try await api.sendPR(link, recipient:"U123", connection:slack)
         try await api.sendPR(link, recipient:"https://app.slack.com/client/T1/D123", connection:slack)

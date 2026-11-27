@@ -13,6 +13,35 @@ struct RepoActivity {
         }
     }
 
+    enum MainQueueItem: Identifiable {
+        case openHeader(Int), branchHeader(Int)
+        case work(head: String, pull: Pull?, committed: String?)
+
+        var id: String {
+            switch self {
+            case .openHeader: return "section:open"
+            case .branchHeader: return "section:branches"
+            case let .work(head, _, _): return "head:" + head
+            }
+        }
+    }
+
+    func mainQueue(fullName: String, at now: Date = Date()) -> [MainQueueItem] {
+        let open = pulls.filter {
+            $0.base?.ref == "main" && $0.head.ref != nil &&
+                $0.head.repo?.full_name.caseInsensitiveCompare(fullName) == .orderedSame
+        }
+        let heads = Set(open.compactMap { $0.head.ref })
+        let candidates = recent(at: now).filter { !["main", "prod"].contains($0.name) && !heads.contains($0.name) }
+        var rows: [MainQueueItem] = [.openHeader(open.count)]
+        for pull in open {
+            if let head = pull.head.ref { rows.append(.work(head: head, pull: pull, committed: nil)) }
+        }
+        rows.append(.branchHeader(candidates.count))
+        rows += candidates.map { .work(head: $0.name, pull: nil, committed: $0.target.committedDate) }
+        return rows
+    }
+
     func pull(head: String, base: String, fullName: String) -> Pull? {
         pulls.first { $0.head.ref == head && $0.base?.ref == base &&
             $0.head.repo?.full_name.caseInsensitiveCompare(fullName) == .orderedSame }
@@ -33,6 +62,8 @@ struct CheckCounts {
         default: pending += 1
         }
     }
+
+    var total: Int { passed + failed + pending + skipped }
 
     var summary: String {
         let counts = [(failed, "failed"), (pending, "pending"), (passed, "passed"), (skipped, "skipped")]
@@ -62,36 +93,61 @@ struct PullReadiness: Decodable {
     let latestOpinionatedReviews: Opinions
     let comments: Count
 
-    var review: String {
+    enum Review: String {
+        case changes = "Changes requested"
+        case awaiting = "Awaiting review"
+        case required = "Review required"
+        case approvedAndRequested = "Approved · Review requested"
+        case approved = "Approved"
+        case requested = "Review requested"
+        case submitted = "Reviews submitted"
+        case commented = "Review commented"
+        case none = "No active review"
+    }
+
+    enum Merge: String {
+        case merged = "Merged"
+        case closed = "Closed"
+        case draft = "Draft"
+        case conflicts = "Merge conflicts"
+        case behind = "Branch behind base"
+        case blocked = "Merge blocked"
+        case unstable = "Checks not passing"
+        case hooks = "Merge subject to hooks"
+        case ready = "Ready to merge"
+        case unknown = "Merge status pending"
+    }
+
+    var review: Review {
         let requested = reviewRequests.totalCount > 0
         switch reviewDecision {
-        case "CHANGES_REQUESTED": return "Changes requested"
-        case "REVIEW_REQUIRED": return requested ? "Awaiting review" : "Review required"
-        case "APPROVED": return requested ? "Approved · Review requested" : "Approved"
+        case "CHANGES_REQUESTED": return .changes
+        case "REVIEW_REQUIRED": return requested ? .awaiting : .required
+        case "APPROVED": return requested ? .approvedAndRequested : .approved
         default:
             let opinions = latestOpinionatedReviews.nodes.map(\.state)
-            if opinions.contains("CHANGES_REQUESTED") { return "Changes requested" }
-            if requested { return "Review requested" }
-            if opinions.count < latestOpinionatedReviews.totalCount { return "Reviews submitted" }
-            if opinions.contains("APPROVED") { return "Approved" }
-            return comments.totalCount > 0 ? "Review commented" : "No active review"
+            if opinions.contains("CHANGES_REQUESTED") { return .changes }
+            if requested { return .requested }
+            if opinions.count < latestOpinionatedReviews.totalCount { return .submitted }
+            if opinions.contains("APPROVED") { return .approved }
+            return comments.totalCount > 0 ? .commented : .none
         }
     }
 
-    var merge: String {
-        if state == "MERGED" { return "Merged" }
-        if state == "CLOSED" { return "Closed" }
-        if isDraft { return "Draft" }
-        if mergeable == "CONFLICTING" { return "Merge conflicts" }
+    var merge: Merge {
+        if state == "MERGED" { return .merged }
+        if state == "CLOSED" { return .closed }
+        if isDraft { return .draft }
+        if mergeable == "CONFLICTING" { return .conflicts }
         switch mergeStateStatus {
-        case "DIRTY": return "Merge conflicts"
-        case "BEHIND": return "Branch behind base"
-        case "BLOCKED": return "Merge blocked"
-        case "UNSTABLE": return "Checks not passing"
-        case "HAS_HOOKS": return "Merge subject to hooks"
+        case "DIRTY": return .conflicts
+        case "BEHIND": return .behind
+        case "BLOCKED": return .blocked
+        case "UNSTABLE": return .unstable
+        case "HAS_HOOKS": return .hooks
         case "CLEAN" where mergeable == "MERGEABLE":
-            return ["CHANGES_REQUESTED", "REVIEW_REQUIRED"].contains(reviewDecision) ? "Merge blocked" : "Ready to merge"
-        default: return "Merge status pending"
+            return ["CHANGES_REQUESTED", "REVIEW_REQUIRED"].contains(reviewDecision) ? .blocked : .ready
+        default: return .unknown
         }
     }
 }

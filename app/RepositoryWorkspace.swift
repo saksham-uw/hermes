@@ -160,8 +160,14 @@ private struct RepoCard: View {
                         .foregroundColor(hover ? Theme.ink : Theme.muted).allowsHitTesting(false)
                 }
                 HStack(spacing: 20) {
-                    stat(state.activity.map { $0.recent().count }, singular: "branch · 48h", plural: "branches · 48h")
-                    stat(state.activity?.pulls.count, singular: "open PR", plural: "open PRs")
+                    HStack(spacing: 6) {
+                        WorkflowMark.branch.icon().allowsHitTesting(false)
+                        stat(state.activity.map { $0.recent().count }, singular: "branch · 48h", plural: "branches · 48h")
+                    }
+                    HStack(spacing: 6) {
+                        WorkflowMark.pull.icon().allowsHitTesting(false)
+                        stat(state.activity?.pulls.count, singular: "open PR", plural: "open PRs")
+                    }
                 }
                 Hairline().allowsHitTesting(false)
                 CopyText(state.error.isEmpty ? state.productionSummary : state.error,
@@ -196,6 +202,7 @@ private struct RepoDetail: View {
     @State private var section = RepoSection.branches
     @State private var expanded: String?
     @State private var showImages = false
+    @State private var wideRows = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 17) {
@@ -219,34 +226,35 @@ private struct RepoDetail: View {
             if let data = state.activity {
                 switch section {
                 case .branches:
-                    let recent = data.recent().filter { $0.name != "main" && $0.name != "prod" }
-                    LabelText(text: "Last 48 hours").foregroundColor(Theme.muted)
-                    if recent.isEmpty { Text("No recent feature branches.").foregroundColor(Theme.muted) }
-                    LazyVStack(spacing: 0) {
-                        ForEach(recent, id: \.name) { branch in
-                            row(branch.name, data)
-                        }
-                    }
-                    let older = data.pulls.filter { pull in
-                        pull.head.repo?.full_name.caseInsensitiveCompare(github.scopeID + "/" + repo) == .orderedSame &&
-                        pull.base?.ref == "main" && !recent.contains { $0.name == pull.head.ref }
-                    }
-                    if !older.isEmpty {
-                        LabelText(text: "Other open pull requests").foregroundColor(Theme.muted)
-                        LazyVStack(spacing: 0) {
-                            ForEach(older) { pull in if let head = pull.head.ref { row(head, data) } }
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(data.mainQueue(fullName: github.scopeID + "/" + repo)) { item in
+                            switch item {
+                            case let .openHeader(count):
+                                queueHeading("Open PRs", count: count, caption: "into main")
+                                if count > 0 { CheckPatternKey().padding(.bottom, 9) }
+                            case let .branchHeader(count):
+                                queueHeading("Branches without a PR", count: count, caption: "48h · into main")
+                                    .padding(.top, 14)
+                            case let .work(head, pull, committed):
+                                row(head, pull: pull, committed: committed, data: data)
+                            }
                         }
                     }
                 case .production:
                     CopyText(state.productionSummary, size: 14, face: "GeistMono-Regular")
                     if data.branches.contains(where: { $0.name == "main" }) && data.branches.contains(where: { $0.name == "prod" }) {
                         HStack {
-                            Text("main → prod").font(Theme.display(18))
+                            WorkflowMark.branch.icon(20)
+                            Text("main").font(Theme.display(18))
+                            Rectangle().fill(Theme.muted).frame(width: 24, height: 1)
+                            WorkflowMark.merge.icon(20)
+                            Text("prod").font(Theme.display(18))
                             Spacer()
                             if let ahead { Text(ahead == 0 ? "Up to date" : "\(ahead) ahead").foregroundColor(Theme.muted) }
                         }
                         if let pull = data.pull(head: "main", base: "prod", fullName: github.scopeID + "/" + repo) {
-                            statusLine(pull)
+                            CheckPatternKey()
+                            statusLine(pull, expanded: false)
                         }
                         lane("main", "prod", data)
                     } else { Text("Promotion requires main and prod branches.") }
@@ -262,6 +270,11 @@ private struct RepoDetail: View {
                     }
                 }
             } else if state.loading { LoadingMark(title: "Loading repository…") }
+        }.background {
+            GeometryReader { proxy in
+                Color.clear.onAppear { wideRows = proxy.size.width >= 690 }
+                    .onChange(of: proxy.size.width >= 690) { wideRows = $0 }
+            }
         }.task(id: revision) {
             async let distance = try? state.api.promotionDistance(repo: repo, connection: github)
             await state.load(repo, github)
@@ -270,35 +283,59 @@ private struct RepoDetail: View {
         }
     }
 
-    private func row(_ name: String, _ data: RepoActivity) -> some View {
-        let pull = data.pull(head: name, base: "main", fullName: github.scopeID + "/" + repo)
+    private func queueHeading(_ title: String, count: Int, caption: String) -> some View {
+        HStack(spacing: 9) {
+            Text(title).font(Theme.display(19))
+            Text(String(count)).font(.custom("GeistMono-Medium", size: 11))
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .overlay(Rectangle().strokeBorder(Theme.rule))
+            Spacer()
+            Text(caption).font(.custom("GeistMono-Regular", size: 11)).foregroundColor(Theme.muted)
+        }.padding(.vertical, 8).accessibilityElement(children: .combine)
+    }
+
+    private func row(_ name: String, pull: Pull?, committed: String?, data: RepoActivity) -> some View {
         let active = expanded == name
         let toggle = { if !state.busy { expanded = active ? nil : name } }
         return VStack(alignment: .leading, spacing: 0) {
             Hairline()
             ZStack {
                 Button(action: toggle) { Color.clear.contentShape(Rectangle()) }
-                    .buttonStyle(.plain).accessibilityLabel((active ? "Collapse " : "Expand ") + name).disabled(state.busy)
-                HStack(spacing: 12) {
-                    Text(active ? "−" : "+").foregroundColor(Theme.muted).allowsHitTesting(false)
-                    CopyText(name, size: 14, face: "GeistMono-Regular", activate: toggle)
-                    Spacer(minLength: 4)
-                    if let pull { CopyText("#\(pull.number)", size: 12, face: "GeistMono-Regular", muted: true, activate: toggle) }
-                    if let branch = data.branches.first(where: { $0.name == name }),
-                       let date = ISO8601DateFormatter().date(from: branch.target.committedDate) {
-                        CopyText(abs(date.timeIntervalSinceNow) < 60 ? "Just now" : date.formatted(.relative(presentation: .numeric)), size: 11, muted: true, activate: toggle)
+                    .buttonStyle(.plain).accessibilityLabel((active ? "Collapse " : "Expand ") + (pull?.title ?? name))
+                HStack(spacing: 10) {
+                    (pull == nil ? WorkflowMark.branch : .pull).icon(18)
+                        .frame(width: 30, height: 30)
+                        .foregroundColor(pull == nil ? Theme.muted : Theme.canvas)
+                        .background(pull == nil ? Theme.canvas : Theme.ink)
+                        .overlay(Rectangle().strokeBorder(Theme.rule)).allowsHitTesting(false)
+                    let layout = wideRows && !active ? AnyLayout(HStackLayout(spacing: 10)) :
+                        AnyLayout(VStackLayout(alignment: .leading, spacing: 7))
+                    layout {
+                        VStack(alignment: .leading, spacing: 3) {
+                            CopyText(pull?.title ?? name, size: pull == nil ? 13 : 15,
+                                     face: pull == nil ? "GeistMono-Regular" : "Archivo-SemiBold", activate: toggle)
+                            if let pull {
+                                CopyText("#\(pull.number) · " + name, size: 11, face: "GeistMono-Regular", muted: true, activate: toggle)
+                            }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                        if let pull { statusLine(pull, expanded: active) }
                     }
-                }.padding(.horizontal, 12).padding(.vertical, 11)
+                    if let committed, let date = ISO8601DateFormatter().date(from: committed) {
+                        CopyText(abs(date.timeIntervalSinceNow) < 60 ? "Just now" : date.formatted(.relative(presentation: .numeric)),
+                                 size: 11, muted: true, activate: toggle)
+                    }
+                    Path { p in
+                        p.move(to: CGPoint(x: 2, y: 1)); p.addLine(to: CGPoint(x: 7, y: 6)); p.addLine(to: CGPoint(x: 2, y: 11))
+                    }.stroke(Theme.muted, lineWidth: 1.4).frame(width: 10, height: 12)
+                     .rotationEffect(.degrees(active ? 90 : 0)).allowsHitTesting(false)
+                }.padding(.horizontal, 12).padding(.vertical, 9)
             }.modifier(ControlHover()).disabled(state.busy)
-            if let pull {
-                statusLine(pull).padding(.horizontal, 12).padding(.bottom, 9)
-            }
             if active { lane(name, "main", data).id(name) }
-        }.background(active ? Theme.surface : Color.clear)
+        }.background(active || pull != nil ? Theme.surface : Color.clear)
     }
 
-    private func statusLine(_ pull: Pull) -> some View {
-        PullStatusLine(repo: repo, github: github, pull: pull, api: state.api)
+    private func statusLine(_ pull: Pull, expanded: Bool) -> some View {
+        PullStatusLine(repo: repo, github: github, pull: pull, api: state.api, expanded: expanded)
             .id("\(pull.number)/\(pull.head.sha)/\(revision)/\(state.reviewRevisions[pull.number, default: 0])")
     }
 
@@ -307,43 +344,6 @@ private struct RepoDetail: View {
                        pull: data.pull(head: head, base: base, fullName: github.scopeID + "/" + repo),
                        hasBase: data.branches.contains { $0.name == base } && (base != "prod" || ahead != 0),
                        settings: { settings(.workflow) })
-    }
-}
-
-private struct PullStatusLine: View {
-    let repo: String
-    let github: Connection
-    let pull: Pull
-    let api: ConnectorAPI
-    @State private var readiness: PullReadiness?
-    @State private var readinessError: String?
-    @State private var checks: String?
-
-    var body: some View {
-        let decision = readiness.map { $0.review + "  ·  " + $0.merge }
-            ?? (readinessError == nil ? "Reading PR status…" : "Review and merge status unavailable")
-        Text(decision + "  |  " + (checks ?? "Reading checks…"))
-            .font(.custom("GeistMono-Regular", size: 11))
-            .foregroundColor(Theme.muted)
-            .fixedSize(horizontal: false, vertical: true)
-            .textSelection(.enabled)
-            .help(readinessError ?? "GitHub review decision, merge readiness, and checks for this revision.")
-            .task {
-                do {
-                    let value = try await api.pullReadiness(repo: repo, pull: pull, connection: github)
-                    if !Task.isCancelled { readiness = value }
-                } catch {
-                    if !Task.isCancelled { readinessError = error.localizedDescription }
-                }
-            }
-            .task {
-                do {
-                    let value = try await api.checks(repo: repo, pull: pull, connection: github)
-                    if !Task.isCancelled { checks = value.summary }
-                } catch {
-                    if !Task.isCancelled { checks = "Checks unavailable" }
-                }
-            }
     }
 }
 
@@ -374,13 +374,13 @@ private struct BranchWorkflow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if let pull {
+            if let pull, base == "prod" {
                 HStack {
                     CopyText("#\(pull.number)  " + pull.title, size: 15, face: "Archivo-SemiBold")
                     Spacer()
                     actionButton("GitHub ↗") { NSWorkspace.shared.open(url(pull)) }
                 }
-            } else if base == "main" { Text("Pull request into main").foregroundColor(Theme.muted) }
+            }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 8) { actions }
                 VStack(alignment: .leading, spacing: 8) { actions }
@@ -439,6 +439,9 @@ private struct BranchWorkflow: View {
                         return "Sent #\(pull.number) in a direct message."
                     }
                 }.help("Send this PR link to " + recipient)
+            }
+            if base == "main" {
+                actionButton("GitHub ↗") { NSWorkspace.shared.open(url(pull)) }
             }
             actionButton("Options") { editing.toggle(); confirmMerge = false }
         } else {
